@@ -52,8 +52,8 @@ Va sur la [page des téléchargements](../../releases/latest) et prends le fichi
 
 ### Linux
 
-- **N'importe quelle distribution** : télécharge `onda_…_amd64.AppImage`, rends-le exécutable (`chmod +x onda_*.AppImage`) puis lance-le.
-- **Debian / Ubuntu** : télécharge le `.deb` et installe-le avec `sudo apt install ./onda_*.deb`.
+- **N'importe quelle distribution** : télécharge `Onda_…_amd64.AppImage`, rends-le exécutable (`chmod +x Onda_*.AppImage`) puis lance-le.
+- **Debian / Ubuntu** : télécharge le `.deb` et installe-le avec `sudo apt install ./Onda_*.deb`.
 
 ## Premiers pas
 

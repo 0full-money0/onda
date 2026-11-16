@@ -56,7 +56,7 @@ jobs:
             Télécharge le fichier de ton système juste en dessous :
             - **Windows** : `Onda_…_x64-setup.exe`
             - **Mac** : `Onda_…_universal.dmg`
-            - **Linux** : `onda_…_amd64.AppImage` (ou `.deb` pour Debian / Ubuntu)
+            - **Linux** : `Onda_…_amd64.AppImage` (ou `.deb` pour Debian / Ubuntu)
 
             Le mode d'emploi complet est sur la page du projet.
             Si Onda te plaît, laisse une ⭐ au projet : ça aide énormément !
