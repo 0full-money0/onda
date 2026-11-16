@@ -1,0 +1,61 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Onda",
+  "mainBinaryName": "Onda",
+  "version": "1.0.0",
+  "identifier": "app.lueur.desktop",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "scene",
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --ignore-gpu-blocklist --enable-gpu-rasterization --autoplay-policy=no-user-gesture-required",
+        "url": "scene.html",
+        "title": "Onda",
+        "fullscreen": true,
+        "decorations": false,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "app", "dmg", "deb", "appimage"],
+    "publisher": "Onda",
+    "copyright": "© 2026 Les auteurs d'Onda",
+    "category": "Music",
+    "shortDescription": "La musique en grand",
+    "longDescription": "Onda transforme ton écran en scène : le clip du titre en plein écran, les paroles synchronisées, ta bibliothèque et une lumière qui bat au rythme de la musique.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "installer/nsis-header.bmp",
+        "sidebarImage": "installer/nsis-sidebar.bmp",
+        "installMode": "currentUser",
+        "languages": ["French", "English"],
+        "displayLanguageSelector": false
+      }
+    },
+    "macOS": {
+      "dmg": {
+        "background": "installer/dmg-background.png",
+        "windowSize": { "width": 660, "height": 400 },
+        "appPosition": { "x": 190, "y": 300 },
+        "applicationFolderPosition": { "x": 470, "y": 300 }
+      }
+    }
+  }
+}

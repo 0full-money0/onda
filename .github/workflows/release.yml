@@ -1,0 +1,65 @@
+# Fabrique Onda pour Windows, Mac et Linux, et publie les installateurs dans une release GitHub.
+# Se déclenche quand on pousse une étiquette de version, par exemple : git tag v1.0.0 && git push --tags
+name: Publier Onda
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ''
+          - platform: macos-latest
+            args: '--target universal-apple-darwin'
+          - platform: ubuntu-22.04
+            args: ''
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dépendances Linux
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - run: npm install
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Onda ${{ github.ref_name }}'
+          releaseBody: |
+            Télécharge le fichier de ton système juste en dessous :
+            - **Windows** : `Onda_…_x64-setup.exe`
+            - **Mac** : `Onda_…_universal.dmg`
+            - **Linux** : `onda_…_amd64.AppImage` (ou `.deb` pour Debian / Ubuntu)
+
+            Le mode d'emploi complet est sur la page du projet.
+            Si Onda te plaît, laisse une ⭐ au projet : ça aide énormément !
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
