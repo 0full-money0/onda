@@ -254,6 +254,18 @@ fn place_player(app: &AppHandle, w: &tauri::WebviewWindow) {
 /// Script chargé dans la page du service : il exécute la demande de lecture laissée par l'app (recherche + lancement), sans rien afficher.
 const PLAYER_INIT: &str = r#"(function () {
   if (window.top !== window) return;
+  // Spotify : garde le jeton que le lecteur web utilise déjà pour lire le compte de la personne connectée.
+  if (location.hostname === 'open.spotify.com') {
+    var of = window.fetch;
+    window.fetch = function (input, init) {
+      try {
+        var h = (init && init.headers) || (input && input.headers);
+        var auth = h && (h.get ? h.get('authorization') : (h.authorization || h.Authorization));
+        if (auth && /^Bearer /i.test(auth)) window.__spToken = auth;
+      } catch (e) {}
+      return of.apply(this, arguments);
+    };
+  }
   function act() {
     var n = window.name || '';
     if (n.indexOf('vesper:') !== 0) return;
@@ -292,23 +304,56 @@ const PLAYER_INIT: &str = r#"(function () {
       until(function () { return document.querySelector('music-horizontal-item, music-image-row'); }, 40).then(function (b) { if (b) b.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); });
     }
   }
-  // Récupère la musique du compte Apple Music et la dépose dans l'adresse de la page, où l'app vient la lire.
-  window.__vesperFetch = async function () {
+  var send = function (out) { location.hash = 'vesper=' + encodeURIComponent(JSON.stringify(out)); };
+  var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+  // --- Spotify ---
+  var spImg = function (imgs) { imgs = imgs || []; return (imgs[1] || imgs[0] || {}).url || ''; };
+  var spTrack = function (t) { return t && t.name ? { id: t.id || '', ms: t.duration_ms || 0, n: t.name, a: (t.artists || []).map(function (x) { return x.name; }).join(', '), al: (t.album || {}).name || '', art: spImg((t.album || {}).images), t: 'songs' } : null; };
+  var spGet = async function (path) {
+    for (var i = 0; i < 40 && !window.__spToken; i++) await sleep(500);
+    if (!window.__spToken) throw 'jeton';
+    var r = await fetch('https://api.spotify.com' + path, { headers: { Authorization: window.__spToken } });
+    if (r.status === 401 || r.status === 403) throw 'connexion';
+    if (!r.ok) throw 'erreur ' + r.status;
+    return r.json();
+  };
+  var spFetch = async function () {
+    var out = { ok: false, added: [], played: [], songs: [], lists: [], why: '' };
+    try {
+      var likedAll = [];
+      for (var off = 0; off < 2000; off += 50) { var pg = await spGet('/v1/me/tracks?limit=50&offset=' + off); likedAll = likedAll.concat((pg.items || []).map(function (i) { return spTrack(i.track); }).filter(Boolean)); if (!pg.next) break; }
+      out.added = likedAll.slice(0, 25);
+      out.songs = likedAll;
+      try { out.played = ((await spGet('/v1/me/player/recently-played?limit=30')).items || []).map(function (i) { return spTrack(i.track); }).filter(Boolean); } catch (e) {}
+      var plAll = []; for (var po = 0; po < 500; po += 50) { var pl = await spGet('/v1/me/playlists?limit=50&offset=' + po); plAll = plAll.concat((pl.items || []).filter(Boolean)); if (!pl.next) break; }
+      out.lists = plAll.map(function (p) { return { id: p.id, n: p.name || '', a: (p.owner || {}).display_name || '', art: spImg(p.images), t: 'playlists' }; });
+      out.ok = true;
+    } catch (e) { out.why = String(e); }
+    send(out);
+  };
+  var spList = async function (id) {
+    var out = { ok: false, tracks: [] };
+    try { out.tracks = ((await spGet('/v1/playlists/' + id + '/tracks?limit=100')).items || []).map(function (i) { return spTrack(i.track); }).filter(Boolean); out.ok = true; } catch (e) {}
+    send(out);
+  };
+  // --- Apple Music ---
+  var amFetch = async function () {
     var m = window.MusicKit && MusicKit.getInstance && MusicKit.getInstance();
-    var out = { ok: false, added: [], played: [], songs: [], lists: [] };
-    if (m && m.isAuthorized) {
+    var out = { ok: false, added: [], played: [], songs: [], lists: [], why: '' };
+    if (!m) out.why = 'pas-pret';
+    else if (!m.isAuthorized) out.why = 'connexion';
+    else {
       var pick = function (r) { return ((r && r.data && r.data.data) || []).map(function (x) { var a = x.attributes || {}; return { id: x.id || '', ms: a.durationInMillis || 0, n: a.name || '', a: a.artistName || '', al: a.albumName || '', art: a.artwork && a.artwork.url ? a.artwork.url.replace('{w}', '300').replace('{h}', '300') : '', t: x.type || '' }; }).filter(function (x) { return x.n; }); };
       var get = async function (p, q) { try { return pick(await m.api.music(p, q)); } catch (e) { return []; } };
       out.added = await get('/v1/me/library/recently-added', { limit: 25 });
       out.played = await get('/v1/me/recent/played/tracks', { limit: 20 });
-      out.songs = await get('/v1/me/library/songs', { limit: 100 });
-      out.lists = await get('/v1/me/library/playlists', { limit: 60 });
+      for (var off = 0; off < 2000; off += 100) { var page = await get('/v1/me/library/songs', { limit: 100, offset: off }); out.songs = out.songs.concat(page); if (page.length < 100) break; }
+      for (var po = 0; po < 500; po += 100) { var pp = await get('/v1/me/library/playlists', { limit: 100, offset: po }); out.lists = out.lists.concat(pp); if (pp.length < 100) break; }
       out.ok = true;
     }
-    location.hash = 'vesper=' + encodeURIComponent(JSON.stringify(out));
+    send(out);
   };
-  // Titres d'une playlist du compte.
-  window.__vesperFetchList = async function (id, kind) {
+  var amList = async function (id, kind) {
     var m = window.MusicKit && MusicKit.getInstance && MusicKit.getInstance();
     var out = { ok: false, tracks: [] };
     if (m && m.isAuthorized) {
@@ -318,7 +363,17 @@ const PLAYER_INIT: &str = r#"(function () {
         out.ok = true;
       } catch (e) {}
     }
-    location.hash = 'vesper=' + encodeURIComponent(JSON.stringify(out));
+    send(out);
+  };
+  // L'app appelle ces deux fonctions ; la réponse est déposée dans l'adresse de la page, où l'app vient la lire.
+  window.__vesperFetch = function () {
+    if (location.hostname === 'open.spotify.com') return spFetch();
+    if (location.hostname === 'music.apple.com') return amFetch();
+    send({ ok: false, why: 'non-pris-en-charge' });
+  };
+  window.__vesperFetchList = function (id, kind) {
+    if (location.hostname === 'open.spotify.com') return spList(id);
+    return amList(id, kind);
   };
   window.__vesperAct = act;
   if (document.readyState === 'complete') act(); else window.addEventListener('load', act);
@@ -437,7 +492,7 @@ async fn player_data(app: AppHandle, list: Option<String>, kind: Option<String>)
         _ => "window.__vesperFetch && window.__vesperFetch()".to_string(),
     };
     let _ = w.eval(&js);
-    for _ in 0..45 {
+    for _ in 0..150 {
         thread::sleep(Duration::from_millis(400));
         if let Ok(u) = w.url() {
             if let Some(d) = u.fragment().and_then(|f| f.strip_prefix("vesper=")) {

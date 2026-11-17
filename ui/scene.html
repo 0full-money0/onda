@@ -514,8 +514,9 @@ $('tiles').onclick = (e) => { const o = e.target.closest('.orb'); if (o) chooseS
 $('homeSys').onclick = () => chooseService('system');
 async function chooseService(id, forceLogin) {
   S.service = id; invoke('set_settings', { patch: { service: id } }); renderService();
+  acctState = ''; cardKey = ''; sideKey = ''; libStack = []; lib = { page: 'home' }; buildCards(); buildSide();
   if (id === 'system') { invoke('close_service'); return setView('library'); }
-  if ((S.logged || {})[id] && !forceLogin) { invoke('open_service', { id, show: false, login: false }).catch(() => {}); return setView('ambiance'); }
+  if ((S.logged || {})[id] && !forceLogin) { invoke('open_service', { id, show: false, login: false }).catch(() => {}); setView('library'); return loadAccount(); }
   try { await invoke('open_service', { id, show: true, login: true }); setView('service'); }
   catch (e) { toast('Impossible d\u2019ouvrir ce service : ' + e); }
 }
@@ -527,14 +528,18 @@ function renderService() {
   $('lgTitle').textContent = 'Connexion à ' + (s ? s.name : ''); $('lgMono').innerHTML = s ? s.icon : ''; $('lgMono').style.setProperty('--sc', s ? s.color : '#fff');
 }
 function updateEmpty() {
-  const show = view === 'ambiance' && !st.title && !cards.length;
-  $('empty').style.display = show ? 'block' : 'none';
+  const show = view === 'ambiance' && !st.title && !cards.length && !document.body.classList.contains('zen');
+  const el = $('empty'); if ((el.style.display === 'block') !== show) el.style.display = show ? 'block' : 'none';
   if (!show) return;
-  $('emptyTxt').textContent = 'Choisis un titre dans la bibliothèque : il apparaîtra ici avec son clip et ses paroles.';
+  const name = svc() && svc().id !== 'system' ? svc().name : 'ton service';
+  const [t, d] = acctState === 'chargement' ? [`Récupération de ta bibliothèque ${name}…`, 'Tes titres et tes playlists arrivent dans quelques secondes.']
+    : acctState === 'echec' ? ['Bibliothèque introuvable', `Impossible de lire ta bibliothèque ${name}. Ouvre la bibliothèque pour réessayer ou te reconnecter.`]
+    : ['Rien ne joue pour l’instant', 'Choisis un titre dans la bibliothèque : il apparaîtra ici avec son clip et ses paroles.'];
+  if (el.firstElementChild.textContent !== t) { el.firstElementChild.textContent = t; $('emptyTxt').textContent = d; }
   $('emptyGo').textContent = 'Ouvrir la bibliothèque';
 }
 $('emptyGo').onclick = () => setView('library');
-$('lgDone').onclick = () => { const l = { ...(S.logged || {}), [S.service]: true }; S.logged = l; invoke('set_settings', { patch: { logged: l } }); setView('ambiance'); };
+$('lgDone').onclick = () => { const l = { ...(S.logged || {}), [S.service]: true }; S.logged = l; invoke('set_settings', { patch: { logged: l } }); setView('library'); loadAccount(); };
 $('lgReload').onclick = () => invoke('player_nav', { action: 'reload' });
 $('lgOther').onclick = () => setView('home');
 $('bFind').onclick = () => { setView('library'); setTimeout(() => { $('lq').focus(); $('lq').select(); }, 350); };
@@ -606,7 +611,7 @@ const mkTrack = (x, alb) => ({ id: x.id, name: x.title, artist: (x.artist || {})
 const mkAlbum = (x) => ({ id: x.id, name: x.title, artist: (x.artist || {}).name || '', art: x.cover_big || x.cover_medium || '' });
 const fmt = (ms) => { const t = Math.floor(ms / 1000); return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0'); };
 const tkey = (t) => norm(t.artist) + '|' + norm(t.name);
-const store = (k, v) => { try { if (v === undefined) return JSON.parse(localStorage.getItem(k) || '[]'); localStorage.setItem(k, JSON.stringify(v)); } catch { return []; } };
+const store = (k, v) => { k = k + ':' + (S.service || 'aucun'); try { if (v === undefined) return JSON.parse(localStorage.getItem(k) || '[]'); localStorage.setItem(k, JSON.stringify(v)); } catch { return []; } };
 const isFav = (t) => store('favs').some(f => tkey(f) === tkey(t));
 function toggleFav(t) {
   if (!t || !t.name) return;
@@ -684,8 +689,14 @@ function step(d) {
 }
 
 // ================= bibliothèque =================
-if (!localStorage.getItem('reset1')) { localStorage.removeItem('recent'); localStorage.setItem('reset1', '1'); }   // retire les titres de test
-const acctGet = () => { try { return JSON.parse(localStorage.getItem('acct') || 'null'); } catch { return null; } };
+try {   // une fois : on garde le compte Apple Music, on retire les favoris et récents qui mélangeaient les services
+  if (!localStorage.getItem('reset2')) {
+    const old = localStorage.getItem('acct'); if (old) localStorage.setItem('acct:apple', old);
+    ['acct', 'favs', 'recent'].forEach(k => localStorage.removeItem(k)); localStorage.setItem('reset2', '1');
+  }
+} catch {}
+const ACCT = ['apple', 'spotify'];   // services dont l'app sait lire la bibliothèque
+const acctGet = () => { try { return JSON.parse(localStorage.getItem('acct:' + S.service) || 'null'); } catch { return null; } };
 const acT = (x) => ({ id: x.id || '', name: x.n, artist: x.a, album: x.al || '', art: x.art || '', ms: x.ms || 0, kind: x.t || '' });
 async function playAlbum(t) {   // lance tout l'album du compte, dans l'ordre
   toast(`Chargement de « ${t.name} »…`);
@@ -697,14 +708,22 @@ async function playAlbum(t) {   // lance tout l'album du compte, dans l'ordre
 function openAlbumSearch(artist, name) { libStack = []; lib = { page: 'home' }; $('lq').value = artist + ' ' + name; libGo({ page: 'search', q: artist + ' ' + name }); setView('library'); }
 let dataChain = Promise.resolve();
 const acctCall = (args) => (dataChain = dataChain.then(() => invoke('player_data', args || {}), () => invoke('player_data', args || {})));
+let acctState = '', acctRun = 0;
 async function loadAccount() {
-  if (S.service !== 'apple') return;
-  try {
-    const d = JSON.parse(await acctCall());
-    if (!d.ok) return;
-    localStorage.setItem('acct', JSON.stringify(d));
-    cardKey = ''; buildCards(); if (view === 'library') renderLib();
-  } catch {}
+  const svcId = S.service, run = ++acctRun;
+  if (!ACCT.includes(svcId)) { acctState = 'non'; if (view === 'library') renderLib(); return; }
+  acctState = acctGet() ? 'ok' : 'chargement'; if (view === 'library') renderLib();
+  for (let i = 0; i < 14; i++) {
+    await new Promise(r => setTimeout(r, i ? 4000 : 5000));
+    if (run !== acctRun || svcId !== S.service) return;
+    let d = null; try { d = JSON.parse(await acctCall()); } catch {}
+    if (d && d.ok) {
+      localStorage.setItem('acct:' + svcId, JSON.stringify(d));
+      acctState = 'ok'; cardKey = ''; buildCards(); if (view === 'library') renderLib(); return;
+    }
+    if (i === 7) invoke('player_nav', { action: 'reload' });   // la page du service n'était pas prête : on la recharge une fois
+  }
+  if (run === acctRun && !acctGet()) { acctState = 'echec'; if (view === 'library') renderLib(); }
 }
 let lib = { page: 'home' }, libStack = [], libSeq = 0, libLists = {}, libCache = {};
 const cached = async (url) => libCache[url] || (libCache[url] = await getJson(url));
@@ -722,14 +741,14 @@ async function renderLib() {
   $('sheet').classList.remove('open');
   $('libBack').style.display = libStack.length ? '' : 'none';
   document.querySelectorAll('.lnav').forEach(n => n.classList.toggle('on', n.dataset.p === lib.page || (lib.page === 'plist' && n.dataset.p === 'lists')));
-  const hasAcct = S.service === 'apple' && !!acctGet(); document.querySelectorAll('.lnav.acct').forEach(n => { n.style.display = hasAcct ? '' : 'none'; });
+  const hasAcct = ACCT.includes(S.service) && !!acctGet(); document.querySelectorAll('.lnav.acct').forEach(n => { n.style.display = hasAcct ? '' : 'none'; });
   if (!el.innerHTML || lib.page === 'plist') el.innerHTML = '<div class="lnote">Chargement…</div>';
   const lists = {}; libLists = lists;
   if (lib.page === 'favs') {
     const fv = store('favs');
     html = '<h3>Tes favoris</h3>' + (fv.length ? rowsHtml(fv, 'fav') : '<div class="lnote">Aucun favori pour l’instant. Clique le cœur d’un titre pour l’ajouter.</div>');
   } else if (lib.page === 'recent') {   // écoutes du compte + titres lancés depuis l'app
-    const rec = store('recent'), ac = S.service === 'apple' ? acctGet() : null;
+    const rec = store('recent'), ac = acctGet();
     if (ac && ac.played.length) html += `<h3>Écoutés récemment sur ${svc().name}</h3>` + rowsHtml(ac.played.map(acT), 'acP');
     if (rec.length) html += '<h3>Lancés depuis Onda</h3>' + rowsHtml(rec, 'rec');
     if (!html) html = '<div class="lnote">Rien pour le moment.</div>';
@@ -745,14 +764,17 @@ async function renderLib() {
     html = `<div class="lhead"><div><small>Playlist</small><h2>${esc(lib.name || '')}</h2><p>${tracks.length} titres</p>${tracks.length ? '<button class="cta" data-playall="pl">Lire la playlist</button>' : ''}</div></div>`
       + (tracks.length ? rowsHtml(tracks, 'pl') : '<div class="lnote">Impossible de lire cette playlist pour le moment.</div>');
   } else if (lib.page === 'home') {
-    const [ct, ca] = await Promise.all([cached(DZ + '/chart/0/tracks?limit=20'), cached(DZ + '/chart/0/albums?limit=14')]);
-    const rec = store('recent'), fv = store('favs'), ac = S.service === 'apple' ? acctGet() : null;
+    const ac = acctGet(), name = svc() ? svc().name : 'ton service';
+    if (direct() && queue.length > qi + 1) html += '<h3>À suivre</h3>' + rowsHtml(queue.slice(qi + 1, qi + 7), 'next');
     if (ac && ac.added.length) html += '<h3>Ajouts récents</h3>' + rowsHtml(ac.added.filter(x => x.a).map(acT), 'acA');
     if (ac && ac.lists && ac.lists.length) html += '<h3>Mes playlists</h3>' + plistsHtml(ac.lists.slice(0, 12));
     if (ac && ac.songs.length) html += '<h3>Ma musique</h3>' + rowsHtml(ac.songs.slice(0, 10).map(acT), 'acS');
-    if (direct() && queue.length > qi + 1) html += '<h3>À suivre</h3>' + rowsHtml(queue.slice(qi + 1, qi + 7), 'next');
-    html += '<h3>Albums du moment</h3>' + cardsHtml(((ca && ca.data) || []).map(mkAlbum));
-    html += '<h3>Top titres</h3>' + rowsHtml(((ct && ct.data) || []).map(x => mkTrack(x)), 'top');
+    if (!ac) html += acctState === 'non'
+      ? `<div class="lnote">Onda ne sait pas encore lire la bibliothèque de ton compte ${esc(name)}.<br>Utilise la recherche en haut pour trouver et lancer tes titres.</div>`
+      : acctState === 'echec'
+        ? `<div class="lnote">Impossible de récupérer ta bibliothèque ${esc(name)}.<br>Vérifie que tu es bien connecté, puis réessaie.<br><br><button class="cta" data-acct="retry">Réessayer</button> <button class="ghost" data-acct="login">Me reconnecter</button></div>`
+        : `<div class="lnote">Récupération de ta bibliothèque ${esc(name)}…</div>`;
+    else if (!html) html = '<div class="lnote">Ta bibliothèque est vide pour l’instant.</div>';
   } else if (lib.page === 'search') {
     const q = new URLSearchParams({ q: lib.q, limit: '10' });
     const [tr, al, ar] = await Promise.all([getJson(`${DZ}/search?${q}`), getJson(`${DZ}/search/album?${q}`), getJson(`${DZ}/search/artist?${new URLSearchParams({ q: lib.q, limit: '6' })}`)]);
@@ -814,6 +836,7 @@ $('libBody').onclick = (e) => {
     return playFrom(list, k);
   }
   const pa = e.target.closest('[data-playall]'); if (pa) return playFrom(libLists[pa.dataset.playall], 0);
+  const ra = e.target.closest('[data-acct]'); if (ra) { if (ra.dataset.acct === 'retry') loadAccount(); else chooseService(S.service, true); return; }
   const pl = e.target.closest('[data-plist]'); if (pl) return libGo({ page: 'plist', id: pl.dataset.plist, name: pl.dataset.name });
   const al = e.target.closest('[data-album]'); if (al) return libGo({ page: 'album', id: al.dataset.album });
   const ar = e.target.closest('[data-artist]'); if (ar) return libGo({ page: 'artist', id: ar.dataset.artist });
@@ -827,12 +850,11 @@ $('lq').addEventListener('keydown', (e) => { if (e.key === 'Enter') { clearTimeo
 
 // ================= carrousel =================
 let idle = [];
-getJson(DZ + '/chart/0/albums?limit=14').then((r) => { idle = ((r && r.data) || []).map(mkAlbum); buildCards(); updateEmpty(); });
 function buildCards() {
   const albums = (AD && AD.albums) || [];
   let list = albums.map(a => ({ img:a.art, title:a.name, sub:a.artist, id:a.id }));
   const idleMode = !st.title && !list.length;
-  const acc = S.service === 'apple' ? acctGet() : null, mine = acc ? acc.added.filter(x => x.a && x.art) : [];
+  const acc = acctGet(), mine = acc ? acc.added.filter(x => x.a && x.art) : [];
   if (idleMode) list = mine.length ? mine.map(x => ({ img:x.art, title:x.n, sub:x.a, q:true, kind:x.t || '', aid:x.id || '' }))       // tes ajouts récents
                                    : idle.map(a => ({ img:a.art, title:a.name, sub:a.artist, id:a.id }));
   let i = -1;
@@ -1119,7 +1141,7 @@ function nearEnd() {
   } catch {}
 }
 function tick() {
-  nearEnd();
+  nearEnd(); updateEmpty();
   $('fill').style.transform = `scaleX(${st.dur ? Math.min(1, nowPos(st) / st.dur) : 0})`;
   // fin du titre : on enchaîne sur le suivant de la file
 }
@@ -1214,7 +1236,8 @@ function start() {
     S = d.settings; art = d.art; renderSettings(); st = { title: '\u0000' }; onState(d.state); renderArt();
     window.__dbg = !!d.demo;
     if (d.demo === 'alb') { S.service = 'apple'; renderService(); setView('ambiance'); invoke('open_service', { id: 'apple', show: false, login: false }); setTimeout(async () => { await loadAccount(); const a = acctGet(), x = a && a.added.find(y => (y.t || '').includes('album')); if (x) playAlbum(acT(x)); }, 9000); }
-    else if (d.demo === 'acct') { S.service = 'apple'; renderService(); setView('ambiance'); invoke('open_service', { id: 'apple', show: false, login: false }); setTimeout(async () => { await loadAccount(); setView('library'); }, 9000); setTimeout(() => { const a = acctGet(); if (a && a.lists && a.lists[0]) libGo({ page: 'plist', id: a.lists[0].id, name: a.lists[0].n }); else libGo({ page: 'lists' }); }, 24000); }
+    else if (d.demo === 'fresh') { localStorage.removeItem('acct:apple'); S.service = 'apple'; renderService(); setView('ambiance'); invoke('open_service', { id: 'apple', show: false, login: false }); }
+    else if (d.demo === 'acct') { localStorage.removeItem('acct:apple'); S.service = 'apple'; renderService(); setView('ambiance'); invoke('open_service', { id: 'apple', show: false, login: false }); setTimeout(async () => { await loadAccount(); setView('library'); }, 9000); setTimeout(() => { const a = acctGet(); if (a && a.lists && a.lists[0]) libGo({ page: 'plist', id: a.lists[0].id, name: a.lists[0].n }); else libGo({ page: 'lists' }); }, 24000); }
     else if (d.demo === 'home') { S.service = ''; setView('home'); }
     else if (d.demo === 'login') { S.service = 'spotify'; renderService(); invoke('open_service', { id: 'spotify', show: true, login: true }); setView('service'); }
     else if (d.demo === 'amb') { S.service = 'system'; setView('ambiance'); }
@@ -1231,7 +1254,7 @@ function start() {
     }
     else if (!S.service) setView('home');
     else { if (isWeb()) invoke('open_service', { id: S.service, show: false, login: false }).catch(() => {}); setView('library'); }
-    setTimeout(loadAccount, 9000);   // la musique du compte, une fois la page du service chargée
+    loadAccount();   // la musique du compte, une fois la page du service chargée
     // lancement : le logo se dessine, puis l'interface arrive par vagues
     setTimeout(() => { $('splash').classList.add('gone'); document.body.classList.add('ready'); setTimeout(() => document.body.classList.add('settled'), 1600); }, 3200);
   }).catch(() => setTimeout(start, 500));
