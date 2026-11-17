@@ -280,6 +280,8 @@
   .cta { padding:1.2vh 2.4vh; border-radius:99px; background:#fff; color:#0b0b12; font-weight:700; font-size:1.55vh; transition:.25s var(--ease); }
   .cta:hover { scale:1.05; }
 
+  #upd { position:fixed; right:2.4vw; top:2.4vh; z-index:700; display:none; align-items:center; gap:1.2vh; padding:1vh 1vh 1vh 2vh; border-radius:99px; font-size:1.45vh; font-weight:600; }
+  #upd .cta, #upd .ghost { padding:.9vh 1.8vh; font-size:1.35vh; }
   #toast { position:fixed; left:50%; top:3.5vh; transform:translateX(-50%); padding:11px 20px; border-radius:99px; font-size:13.5px; font-weight:600;
     display:none; z-index:600; max-width:60vw; text-align:center; }
 
@@ -408,6 +410,7 @@
   </div>
   <button id="mark" title="Changer de service"><span class="mbars"><i></i><i></i><i></i><i></i><i></i></span>ONDA</button>
   <div class="glass" id="toast"></div>
+  <div class="glass frost" id="upd"><span id="updTxt"></span><button class="cta" id="updGo">Mettre à jour</button><button class="ghost" id="updLater">Plus tard</button></div>
 
   <div class="bar glass frost">
     <button class="src" id="bSrc" title="Changer de service"><span class="sdot" id="srcDot"></span><b id="srcName">Service</b></button>
@@ -647,7 +650,8 @@ async function playTrack(t, stay) {
   const q = `${t.artist} ${t.name}`;
   try {
     if (isWeb()) {   // tous les services : lecture par le moteur vérifié
-      const ids = rankVideos(await invoke('video_search', { q: q + ' official video' }), t);
+      let ids = rankVideos(await invoke('video_search', { q: q + ' official video' }), t);
+      if (t.vid) ids = [t.vid, ...ids.filter(x => x !== t.vid)];   // YouTube Music connaît déjà la bonne vidéo
       if (!ids.length) return toast('Titre introuvable.');
       vidIds = ids; vidIdx = 0; await ytApi(); playNextId();
     } else if (S.service === 'deezer') {
@@ -695,9 +699,9 @@ try {   // une fois : on garde le compte Apple Music, on retire les favoris et r
     ['acct', 'favs', 'recent'].forEach(k => localStorage.removeItem(k)); localStorage.setItem('reset2', '1');
   }
 } catch {}
-const ACCT = ['apple', 'spotify'];   // services dont l'app sait lire la bibliothèque
+const ACCT = ['apple', 'spotify', 'ytmusic'];   // services dont l'app sait lire la bibliothèque
 const acctGet = () => { try { return JSON.parse(localStorage.getItem('acct:' + S.service) || 'null'); } catch { return null; } };
-const acT = (x) => ({ id: x.id || '', name: x.n, artist: x.a, album: x.al || '', art: x.art || '', ms: x.ms || 0, kind: x.t || '' });
+const acT = (x) => ({ vid: x.vid || '', id: x.id || '', name: x.n, artist: x.a, album: x.al || '', art: x.art || '', ms: x.ms || 0, kind: x.t || '' });
 async function playAlbum(t) {   // lance tout l'album du compte, dans l'ordre
   toast(`Chargement de « ${t.name} »…`);
   let d = null; try { d = JSON.parse(await acctCall({ list: t.id, kind: 'al' })); } catch {}
@@ -1196,6 +1200,24 @@ addEventListener('mousemove', (e) => {
     el.style.transform = `perspective(700px) rotateY(${(px * 7).toFixed(1)}deg) rotateX(${(-py * 7).toFixed(1)}deg) scale(1.025)`;
   });
 });
+
+// ================= mise à jour automatique =================
+async function checkUpdate() {
+  try {
+    const u = await invoke('update_check');
+    if (!u) return;
+    $('updTxt').textContent = `Onda ${u.version} est disponible.`; $('upd').style.display = 'flex';
+  } catch (e) { if (window.__dbg) toast('Vérification de mise à jour : ' + e); }
+}
+$('updGo').onclick = async () => {
+  $('updTxt').textContent = 'Installation de la mise à jour… Onda va redémarrer.'; $('updGo').style.display = 'none'; $('updLater').style.display = 'none';
+  try { if (player && playerOk) player.pauseVideo(); } catch {}
+  try { await invoke('update_install'); }
+  catch (e) { $('updTxt').textContent = 'La mise à jour a échoué : ' + e; $('updLater').style.display = ''; $('updLater').textContent = 'Fermer'; }
+};
+$('updLater').onclick = () => { $('upd').style.display = 'none'; };
+setTimeout(checkUpdate, 15000);
+setInterval(checkUpdate, 6 * 3600 * 1000);
 
 // ================= données =================
 function cleanTitle(s) {

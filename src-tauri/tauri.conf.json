@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Onda",
   "mainBinaryName": "Onda",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "identifier": "app.lueur.desktop",
   "build": {
     "frontendDist": "../ui"
@@ -26,7 +26,13 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "app", "dmg", "deb", "appimage"],
+    "targets": [
+      "nsis",
+      "app",
+      "dmg",
+      "deb",
+      "appimage"
+    ],
     "publisher": "Onda",
     "copyright": "© 2026 Les auteurs d'Onda",
     "category": "Music",
@@ -45,16 +51,40 @@
         "headerImage": "installer/nsis-header.bmp",
         "sidebarImage": "installer/nsis-sidebar.bmp",
         "installMode": "currentUser",
-        "languages": ["French", "English"],
+        "languages": [
+          "French",
+          "English"
+        ],
         "displayLanguageSelector": false
       }
     },
     "macOS": {
       "dmg": {
         "background": "installer/dmg-background.png",
-        "windowSize": { "width": 660, "height": 400 },
-        "appPosition": { "x": 190, "y": 300 },
-        "applicationFolderPosition": { "x": 470, "y": 300 }
+        "windowSize": {
+          "width": 660,
+          "height": 400
+        },
+        "appPosition": {
+          "x": 190,
+          "y": 300
+        },
+        "applicationFolderPosition": {
+          "x": 470,
+          "y": 300
+        }
+      }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU2OTFCRjNFQzAxOUYzQUUKUldTdTh4bkFQcitSVnY4UlZCMGYxY2NrMzlhb1dVNloyN0hIbzUvRkFzY1BqRG0xQTMyNXZ0SEcK",
+      "endpoints": [
+        "https://github.com/0full-money0/onda/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

@@ -22,10 +22,11 @@ Le clip du titre en plein écran, les paroles synchronisées, ta bibliothèque e
 
 - **Le clip en fond d'écran** : quand un titre joue, son clip officiel occupe tout l'écran, dans une définition adaptée à ton écran et à ta connexion.
 - **Les paroles synchronisées**, en grand, ligne par ligne.
-- **Ta bibliothèque** : connecte ton compte une fois, et Onda affiche tes ajouts récents, tes écoutes récentes, ta musique et tes playlists (Apple Music pour l'instant).
+- **Ta bibliothèque** : connecte ton compte une fois, et Onda affiche tes ajouts récents, tes écoutes récentes, ta musique et tes playlists (Apple Music, Spotify et YouTube Music).
 - **La recherche** : titres, artistes, albums, avec une fiche pour lire, lire ensuite ou ajouter aux favoris.
 - **La file « À suivre »** à droite : lire juste après, retirer, mettre en favori.
 - **Le mode veille** : seulement le clip et l'heure, rien d'autre.
+- **Les mises à jour automatiques** : quand une nouvelle version sort, Onda te la propose et l'installe en un clic (Windows, Mac et AppImage Linux).
 - **La lumière des bords** qui suit le rythme, avec des étincelles.
 - **Les couleurs de la pochette** reprises dans toute l'interface.
 
@@ -65,8 +66,9 @@ Raccourcis : `Espace` lecture / pause · `←` `→` parcourir · `Échap` reven
 
 ## Bon à savoir
 
-- **D'où vient le son** : Onda joue le **clip officiel** de chaque titre (via YouTube). Le son et l'image sont donc synchronisés, mais **des publicités YouTube peuvent apparaître** sur certains titres, et la version jouée peut parfois différer de l'album. Le son ne passe pas par ton abonnement Apple Music ou Spotify : leurs lecteurs refusent de fonctionner dans une autre application.
-- **Ta bibliothèque** : pour l'instant, seule **Apple Music** remonte tes titres et playlists. Pour les autres services, Onda montre le catalogue, tes favoris et tes écoutes dans Onda.
+- **D'où vient le son** : Onda joue le **clip officiel** de chaque titre, via YouTube. Le son et l'image sont donc synchronisés, mais **des publicités YouTube peuvent apparaître** sur certains titres, et la version jouée peut parfois différer de l'album. Ton compte Apple Music, Spotify ou YouTube Music sert à retrouver ta bibliothèque, pas à produire le son : leurs lecteurs protégés refusent de fonctionner dans une autre application.
+- **Ta bibliothèque** : Apple Music est testée. Spotify et YouTube Music sont prises en charge mais encore peu testées : si ta bibliothèque n'apparaît pas, signale-le dans l'onglet **Issues**. Pour Deezer, SoundCloud et Amazon Music, utilise la recherche.
+- **Linux (.deb)** : la version `.deb` ne se met pas à jour toute seule ; télécharge la nouvelle version à la main, ou utilise l'AppImage.
 - **Paroles** : elles viennent de [LRCLIB](https://lrclib.net). Certains titres n'en ont pas.
 - **Systèmes** : Onda est testée sur Windows. Les versions Mac et Linux sont fabriquées automatiquement à partir du même code, mais n'ont pas encore été testées en conditions réelles : n'hésite pas à signaler ce qui ne marche pas dans l'onglet **Issues**.
 

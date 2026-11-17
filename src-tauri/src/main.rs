@@ -365,14 +365,72 @@ const PLAYER_INIT: &str = r#"(function () {
     }
     send(out);
   };
+  // --- YouTube Music ---
+  var ytHash = async function () {
+    var m = document.cookie.match(/(?:^|; )(?:SAPISID|__Secure-3PAPISID)=([^;]+)/);
+    if (!m) return '';
+    var ts = Math.floor(Date.now() / 1000);
+    var buf = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(ts + ' ' + m[1] + ' ' + location.origin));
+    return 'SAPISIDHASH ' + ts + '_' + Array.from(new Uint8Array(buf)).map(function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+  };
+  var ytBrowse = async function (id) {
+    for (var i = 0; i < 40 && !(window.ytcfg && ytcfg.get && ytcfg.get('INNERTUBE_CONTEXT')); i++) await sleep(500);
+    if (!(window.ytcfg && ytcfg.get)) throw 'pas-pret';
+    var auth = await ytHash(); if (!auth) throw 'connexion';
+    var r = await fetch('/youtubei/v1/browse?prettyPrint=false', { method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json', 'Authorization': auth, 'X-Origin': location.origin, 'X-Goog-AuthUser': '0' },
+      body: JSON.stringify({ context: ytcfg.get('INNERTUBE_CONTEXT'), browseId: id }) });
+    if (r.status === 401 || r.status === 403) throw 'connexion';
+    if (!r.ok) throw 'erreur ' + r.status;
+    return r.json();
+  };
+  var ytWalk = function (o, out) {
+    if (!o || typeof o !== 'object') return;
+    if (Array.isArray(o)) { for (var i = 0; i < o.length; i++) ytWalk(o[i], out); return; }
+    if (o.musicResponsiveListItemRenderer) out.items.push(o.musicResponsiveListItemRenderer);
+    if (o.musicTwoRowItemRenderer) out.cards.push(o.musicTwoRowItemRenderer);
+    for (var k in o) if (k !== 'musicResponsiveListItemRenderer' && k !== 'musicTwoRowItemRenderer') ytWalk(o[k], out);
+  };
+  var ytText = function (c) { return ((((c || {}).musicResponsiveListItemFlexColumnRenderer || {}).text || {}).runs || []).map(function (r) { return r.text; }).join(''); };
+  var ytThumb = function (t) { var th = ((((t || {}).musicThumbnailRenderer || {}).thumbnail || {}).thumbnails) || []; return (th[th.length - 1] || {}).url || ''; };
+  var ytTrack = function (r) {
+    var c = r.flexColumns || [], n = ytText(c[0]); if (!n) return null;
+    var vid = (r.playlistItemData || {}).videoId || '';
+    if (!vid) { try { vid = r.overlay.musicItemThumbnailOverlayRenderer.content.musicPlayButtonRenderer.playNavigationEndpoint.watchEndpoint.videoId; } catch (e) {} }
+    return { id: vid, vid: vid, ms: 0, n: n, a: ytText(c[1]).split(' • ')[0], al: ytText(c[2]), art: ytThumb(r.thumbnail), t: 'songs' };
+  };
+  var ytCard = function (r) {
+    var id = ((r.navigationEndpoint || {}).browseEndpoint || {}).browseId || '';
+    var n = ((r.title || {}).runs || []).map(function (x) { return x.text; }).join('');
+    return id.indexOf('VL') === 0 && n ? { id: id, n: n, a: '', art: ytThumb(r.thumbnailRenderer), t: 'playlists' } : null;
+  };
+  var ytGrab = async function (id) { var o = { items: [], cards: [] }; ytWalk(await ytBrowse(id), o); return o; };
+  var ytFetch = async function () {
+    var out = { ok: false, added: [], played: [], songs: [], lists: [], why: '' };
+    try {
+      out.songs = (await ytGrab('FEmusic_liked_videos')).items.map(ytTrack).filter(Boolean);
+      out.added = out.songs.slice(0, 25);
+      try { out.played = (await ytGrab('FEmusic_history')).items.map(ytTrack).filter(Boolean).slice(0, 30); } catch (e) {}
+      out.lists = (await ytGrab('FEmusic_liked_playlists')).cards.map(ytCard).filter(Boolean);
+      out.ok = true;
+    } catch (e) { out.why = String(e); }
+    send(out);
+  };
+  var ytList = async function (id) {
+    var out = { ok: false, tracks: [] };
+    try { out.tracks = (await ytGrab(id)).items.map(ytTrack).filter(Boolean); out.ok = true; } catch (e) {}
+    send(out);
+  };
   // L'app appelle ces deux fonctions ; la réponse est déposée dans l'adresse de la page, où l'app vient la lire.
   window.__vesperFetch = function () {
     if (location.hostname === 'open.spotify.com') return spFetch();
+    if (location.hostname === 'music.youtube.com') return ytFetch();
     if (location.hostname === 'music.apple.com') return amFetch();
     send({ ok: false, why: 'non-pris-en-charge' });
   };
   window.__vesperFetchList = function (id, kind) {
     if (location.hostname === 'open.spotify.com') return spList(id);
+    if (location.hostname === 'music.youtube.com') return ytList(id);
     return amList(id, kind);
   };
   window.__vesperAct = act;
@@ -503,6 +561,26 @@ async fn player_data(app: AppHandle, list: Option<String>, kind: Option<String>)
         }
     }
     Err("pas de réponse du compte".into())
+}
+
+/// Cherche une version plus récente d'Onda (fichier signé publié sur GitHub).
+#[tauri::command]
+async fn update_check(app: AppHandle) -> Result<Option<Value>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await.map_err(|e| e.to_string())? {
+        Some(u) => Ok(Some(json!({ "version": u.version, "notes": u.body.clone().unwrap_or_default() }))),
+        None => Ok(None),
+    }
+}
+
+/// Télécharge la nouvelle version, vérifie sa signature, l'installe et relance Onda.
+#[tauri::command]
+async fn update_install(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let update = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())?.ok_or("aucune mise à jour")?;
+    update.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
+    app.restart();
 }
 
 #[tauri::command]
@@ -1104,8 +1182,9 @@ fn main() {
 
     tauri::Builder::default()
         .manage(shared.clone())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_scene(app)))
-        .invoke_handler(tauri::generate_handler![init, set_settings, set_source, spotify_status, spotify_connect, spotify_disconnect, spotify_api, video_search, open_service, player_open, player_play, player_data, player_show, player_nav, player_search, close_service, media_cmd, http_get, open_url, wallpaper, win])
+        .invoke_handler(tauri::generate_handler![init, set_settings, set_source, spotify_status, spotify_connect, spotify_disconnect, spotify_api, video_search, open_service, player_open, player_play, player_data, update_check, update_install, player_show, player_nav, player_search, close_service, media_cmd, http_get, open_url, wallpaper, win])
         .on_window_event(|w, e| {
             if let WindowEvent::CloseRequested { api, .. } = e {
                 if w.label() == "scene" {
