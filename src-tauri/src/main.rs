@@ -111,9 +111,8 @@ fn http_get(url: String) -> Result<String, String> {
 }
 
 /// Cherche le clip du morceau et renvoie quelques identifiants de vidéos.
-#[tauri::command(async)]
-fn video_search(q: String) -> Vec<Value> {
-    let url = format!("https://www.youtube.com/results?search_query={}", enc(&q));
+fn video_search_once(q: &str) -> Vec<Value> {
+    let url = format!("https://www.youtube.com/results?search_query={}", enc(q));
     let res = ureq::get(&url)
         .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36")
         .set("Cookie", "SOCS=CAI; CONSENT=YES+1")
@@ -149,7 +148,34 @@ fn video_search(q: String) -> Vec<Value> {
             break;
         }
     }
+    // YouTube affiche parfois ses résultats dans un autre format : on prend alors les vidéos citées dans la page, dans l'ordre.
+    if out.is_empty() {
+        let key = "\"videoId\":\"";
+        let mut rest = html.as_str();
+        while let Some(k) = rest.find(key) {
+            rest = &rest[k + key.len()..];
+            if let Some(id) = rest.get(..11) {
+                if id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') && !out.iter().any(|x| x["id"] == id) {
+                    out.push(json!({ "id": id, "title": "", "secs": 0 }));
+                }
+            }
+            if out.len() >= 8 {
+                break;
+            }
+        }
+    }
     out
+}
+
+/// Cherche le clip d'un titre ; si YouTube renvoie une page vide, on réessaie une fois.
+#[tauri::command(async)]
+fn video_search(q: String) -> Vec<Value> {
+    let first = video_search_once(&q);
+    if !first.is_empty() {
+        return first;
+    }
+    thread::sleep(Duration::from_millis(600));
+    video_search_once(&q)
 }
 
 /// Lit la chaîne JSON qui suit `key` dans un extrait de page.
@@ -289,10 +315,12 @@ const PLAYER_INIT: &str = r#"(function () {
           catch (e) { say('ajout ERR ' + (e && (e.message || e))); }
           return;
         }
-        m.setQueue({ song: s.id }).then(function () { say('file ok'); }, function (e) { say('file ERR ' + e); });
-        await new Promise(function (r) { setTimeout(r, 2500); });
-        try { await Promise.race([m.play(), new Promise(function (_, rej) { setTimeout(function () { rej('play trop long'); }, 40000); })]); say('play ok'); }
-        catch (e) { say('play ERR ' + (e && (e.message || e))); }
+        try {
+          await m.setQueue({ song: s.id }); say('file ok');
+          await m.play(); say('play ok');
+          await sleep(5000); say('etat=' + m.playbackState + ' position=' + Math.round(m.currentPlaybackTime || 0) + 's');
+          await sleep(5000); say('etat=' + m.playbackState + ' position=' + Math.round(m.currentPlaybackTime || 0) + 's');
+        } catch (e) { say('ERR ' + (e && (e.errorCode || e.message || e))); }
         say('queued state=' + m.playbackState);
         } catch (e) { say('ERR ' + (e && (e.message || e))); }
       });
