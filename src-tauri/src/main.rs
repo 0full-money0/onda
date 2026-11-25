@@ -202,7 +202,7 @@ fn wallpaper() -> String {
 
 // ---------- Services de musique intégrés : leur page vit dans une fenêtre de l'app ----------
 
-const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --ignore-gpu-blocklist --enable-gpu-rasterization --autoplay-policy=no-user-gesture-required";
+const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,HardwareMediaKeyHandling --ignore-gpu-blocklist --enable-gpu-rasterization --autoplay-policy=no-user-gesture-required";
 #[allow(dead_code)]
 const EDGE_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0";
 static CUR_SERVICE: Mutex<String> = Mutex::new(String::new());
@@ -317,17 +317,30 @@ const PLAYER_INIT: &str = r#"(function () {
     if (!r.ok) throw 'erreur ' + r.status;
     return r.json();
   };
+  var full = { started: false, done: false, songs: [] };
   var spFetch = async function () {
-    var out = { ok: false, added: [], played: [], songs: [], lists: [], why: '' };
+    var out = { ok: false, added: [], played: [], songs: [], lists: [], why: '', partial: true };
     try {
-      var likedAll = [];
-      for (var off = 0; off < 2000; off += 50) { var pg = await spGet('/v1/me/tracks?limit=50&offset=' + off); likedAll = likedAll.concat((pg.items || []).map(function (i) { return spTrack(i.track); }).filter(Boolean)); if (!pg.next) break; }
-      out.added = likedAll.slice(0, 25);
-      out.songs = likedAll;
-      try { out.played = ((await spGet('/v1/me/player/recently-played?limit=30')).items || []).map(function (i) { return spTrack(i.track); }).filter(Boolean); } catch (e) {}
-      var plAll = []; for (var po = 0; po < 500; po += 50) { var pl = await spGet('/v1/me/playlists?limit=50&offset=' + po); plAll = plAll.concat((pl.items || []).filter(Boolean)); if (!pl.next) break; }
-      out.lists = plAll.map(function (p) { return { id: p.id, n: p.name || '', a: (p.owner || {}).display_name || '', art: spImg(p.images), t: 'playlists' }; });
+      var r = await Promise.all([spGet('/v1/me/tracks?limit=50'), spGet('/v1/me/playlists?limit=50'), spGet('/v1/me/player/recently-played?limit=30').catch(function () { return { items: [] }; })]);
+      var liked = r[0];
+      out.songs = (liked.items || []).map(function (i) { return spTrack(i.track); }).filter(Boolean);
+      out.added = out.songs.slice(0, 25);
+      out.lists = (r[1].items || []).filter(Boolean).map(function (p) { return { id: p.id, n: p.name || '', a: (p.owner || {}).display_name || '', art: spImg(p.images), t: 'playlists' }; });
+      out.played = (r[2].items || []).map(function (i) { return spTrack(i.track); }).filter(Boolean);
       out.ok = true;
+      if (!full.started) {
+        full.started = true;
+        (async function () {
+          var total = Math.min(liked.total || 0, 2000), offs = [];
+          for (var o = 50; o < total; o += 50) offs.push(o);
+          var all = out.songs.slice();
+          for (var k = 0; k < offs.length; k += 5) {
+            var pages = await Promise.all(offs.slice(k, k + 5).map(function (o) { return spGet('/v1/me/tracks?limit=50&offset=' + o).catch(function () { return { items: [] }; }); }));
+            pages.forEach(function (pg) { all = all.concat((pg.items || []).map(function (i) { return spTrack(i.track); }).filter(Boolean)); });
+          }
+          full.songs = all; full.done = true;
+        })();
+      }
     } catch (e) { out.why = String(e); }
     send(out);
   };
@@ -339,17 +352,29 @@ const PLAYER_INIT: &str = r#"(function () {
   // --- Apple Music ---
   var amFetch = async function () {
     var m = window.MusicKit && MusicKit.getInstance && MusicKit.getInstance();
-    var out = { ok: false, added: [], played: [], songs: [], lists: [], why: '' };
+    var out = { ok: false, added: [], played: [], songs: [], lists: [], why: '', partial: true };
     if (!m) out.why = 'pas-pret';
     else if (!m.isAuthorized) out.why = 'connexion';
     else {
       var pick = function (r) { return ((r && r.data && r.data.data) || []).map(function (x) { var a = x.attributes || {}; return { id: x.id || '', ms: a.durationInMillis || 0, n: a.name || '', a: a.artistName || '', al: a.albumName || '', art: a.artwork && a.artwork.url ? a.artwork.url.replace('{w}', '300').replace('{h}', '300') : '', t: x.type || '' }; }).filter(function (x) { return x.n; }); };
       var get = async function (p, q) { try { return pick(await m.api.music(p, q)); } catch (e) { return []; } };
-      out.added = await get('/v1/me/library/recently-added', { limit: 25 });
-      out.played = await get('/v1/me/recent/played/tracks', { limit: 20 });
-      for (var off = 0; off < 2000; off += 100) { var page = await get('/v1/me/library/songs', { limit: 100, offset: off }); out.songs = out.songs.concat(page); if (page.length < 100) break; }
-      for (var po = 0; po < 500; po += 100) { var pp = await get('/v1/me/library/playlists', { limit: 100, offset: po }); out.lists = out.lists.concat(pp); if (pp.length < 100) break; }
-      out.ok = true;
+      var r = await Promise.all([get('/v1/me/library/recently-added', { limit: 25 }), get('/v1/me/recent/played/tracks', { limit: 20 }),
+        get('/v1/me/library/songs', { limit: 100 }), get('/v1/me/library/playlists', { limit: 100 })]);
+      out.added = r[0]; out.played = r[1]; out.songs = r[2]; out.lists = r[3]; out.ok = true;
+      if (!full.started) {
+        full.started = true;
+        (async function () {
+          var all = out.songs.slice();
+          if (all.length >= 100) {
+            for (var base = 100; base < 2000; base += 500) {
+              var pages = await Promise.all([0, 100, 200, 300, 400].map(function (d) { return get('/v1/me/library/songs', { limit: 100, offset: base + d }); }));
+              var got = 0; pages.forEach(function (pg) { all = all.concat(pg); got += pg.length; });
+              if (got < 500) break;
+            }
+          }
+          full.songs = all; full.done = true;
+        })();
+      }
     }
     send(out);
   };
@@ -412,7 +437,7 @@ const PLAYER_INIT: &str = r#"(function () {
       out.added = out.songs.slice(0, 25);
       try { out.played = (await ytGrab('FEmusic_history')).items.map(ytTrack).filter(Boolean).slice(0, 30); } catch (e) {}
       out.lists = (await ytGrab('FEmusic_liked_playlists')).cards.map(ytCard).filter(Boolean);
-      out.ok = true;
+      out.ok = true; full.started = true; full.done = true; full.songs = out.songs;
     } catch (e) { out.why = String(e); }
     send(out);
   };
@@ -422,7 +447,9 @@ const PLAYER_INIT: &str = r#"(function () {
     send(out);
   };
   // L'app appelle ces deux fonctions ; la réponse est déposée dans l'adresse de la page, où l'app vient la lire.
-  window.__vesperFetch = function () {
+  // mode « quick » : l'essentiel tout de suite ; mode « full » : le reste de la bibliothèque, quand il est prêt.
+  window.__vesperFetch = function (mode) {
+    if (mode === 'full') return send(full.done ? { ok: true, done: true, songs: full.songs } : { ok: true, done: false });
     if (location.hostname === 'open.spotify.com') return spFetch();
     if (location.hostname === 'music.youtube.com') return ytFetch();
     if (location.hostname === 'music.apple.com') return amFetch();
@@ -542,16 +569,17 @@ async fn player_play(app: AppHandle, id: String, q: String, add: Option<bool>) -
 
 /// Demande à la page du service la musique du compte, puis lit la réponse.
 #[tauri::command]
-async fn player_data(app: AppHandle, list: Option<String>, kind: Option<String>) -> Result<String, String> {
+async fn player_data(app: AppHandle, list: Option<String>, kind: Option<String>, mode: Option<String>) -> Result<String, String> {
+    let mode = if mode.as_deref() == Some("full") { "full" } else { "quick" };
     let k = if kind.as_deref() == Some("al") { "al" } else { "pl" };
     let w = app.get_webview_window("player").ok_or("lecteur absent")?;
     let js = match &list {
         Some(id) if !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) => format!("window.__vesperFetchList && window.__vesperFetchList('{id}', '{k}')"),
-        _ => "window.__vesperFetch && window.__vesperFetch()".to_string(),
+        _ => format!("window.__vesperFetch && window.__vesperFetch('{mode}')"),
     };
     let _ = w.eval(&js);
-    for _ in 0..150 {
-        thread::sleep(Duration::from_millis(400));
+    for _ in 0..240 {
+        thread::sleep(Duration::from_millis(120));
         if let Ok(u) = w.url() {
             if let Some(d) = u.fragment().and_then(|f| f.strip_prefix("vesper=")) {
                 let out = dec(d);
@@ -641,15 +669,36 @@ fn win(app: AppHandle, action: String) {
             }
         }
         "show" => show_scene(&app),
+        "fullscreen" => {
+            let sh = app.state::<Arc<Shared>>();
+            let windowed = !sh.settings.lock().unwrap()["windowed"].as_bool().unwrap_or(false);
+            update_settings(&app, &sh, &json!({ "windowed": windowed }));
+            if let Some(w) = app.get_webview_window("scene") {
+                apply_mode(&w, windowed);
+            }
+        }
         "quit" => app.exit(0),
         _ => {}
     }
 }
 
+fn apply_mode(w: &tauri::WebviewWindow, windowed: bool) {
+    if windowed {
+        let _ = w.set_fullscreen(false);
+        let _ = w.set_decorations(true);
+        let _ = w.set_size(tauri::LogicalSize::new(1280.0, 800.0));
+        let _ = w.center();
+    } else {
+        let _ = w.set_decorations(false);
+        let _ = w.set_fullscreen(true);
+    }
+}
+
 fn show_scene(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("scene") {
+        let windowed = app.state::<Arc<Shared>>().settings.lock().unwrap()["windowed"].as_bool().unwrap_or(false);
         let _ = w.show();
-        let _ = w.set_fullscreen(true);
+        apply_mode(&w, windowed);
         let _ = w.set_focus();
     }
 }
@@ -1183,6 +1232,23 @@ fn main() {
     tauri::Builder::default()
         .manage(shared.clone())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    use tauri_plugin_global_shortcut::{Code, ShortcutState};
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    let name = match shortcut.key {
+                        Code::MediaPlayPause | Code::MediaStop => "toggle",
+                        Code::MediaTrackNext => "next",
+                        Code::MediaTrackPrevious => "prev",
+                        _ => return,
+                    };
+                    let _ = app.emit("media-key", name);
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_scene(app)))
         .invoke_handler(tauri::generate_handler![init, set_settings, set_source, spotify_status, spotify_connect, spotify_disconnect, spotify_api, video_search, open_service, player_open, player_play, player_data, update_check, update_install, player_show, player_nav, player_search, close_service, media_cmd, http_get, open_url, wallpaper, win])
         .on_window_event(|w, e| {
@@ -1207,6 +1273,12 @@ fn main() {
                 let _ = ov.show();
             }
             show_scene(&handle);
+            {
+                use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut};
+                for c in [Code::MediaPlayPause, Code::MediaTrackNext, Code::MediaTrackPrevious, Code::MediaStop] {
+                    let _ = app.global_shortcut().register(Shortcut::new(None, c));
+                }
+            }
 
             // Icône près de l'horloge
             let open_i = MenuItem::with_id(app, "open", "Ouvrir Onda", true, None::<&str>)?;
