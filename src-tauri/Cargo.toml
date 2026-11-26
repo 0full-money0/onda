@@ -1,6 +1,6 @@
 [package]
 name = "lueur"
-version = "1.0.12"
+version = "1.0.13"
 description = "La lumière qui danse avec ta musique."
 edition = "2021"
 

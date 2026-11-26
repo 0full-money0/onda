@@ -211,6 +211,8 @@ fn open_url(url: String) {
     ];
     let ok = APPS.contains(&url.as_str())
         || url.starts_with("spotify:search:")
+        || url.strip_prefix("spotify:track:").is_some_and(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()))
+        || url.strip_prefix("deezer://www.deezer.com/track/").is_some_and(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
         || url.starts_with("https://music.youtube.com/search?q=")
         || url.starts_with("https://music.apple.com/");
     if ok {
@@ -505,6 +507,18 @@ const PLAYER_INIT: &str = r#"(function () {
     var out = { ok: false, why: '' };
     try {
       if (location.hostname !== 'open.spotify.com') throw 'non-pris-en-charge';
+      if (a.op === 'state') {
+        var rs = await fetch('https://api.spotify.com/v1/me/player', { headers: { Authorization: window.__spToken } });
+        var js = rs.status === 200 ? await rs.json() : null;
+        out.playing = !!(js && js.is_playing); out.pos = (js && js.progress_ms) || 0; out.id = (js && js.item && js.item.id) || ''; out.ok = true;
+        return send(out);
+      }
+      var found = null;
+      if (a.op === 'play') {
+        found = (((await spGet('/v1/search?type=track&limit=1&q=' + encodeURIComponent(a.q))).tracks || {}).items || [])[0];
+        if (!found) throw 'introuvable';
+        out.id = found.id; out.uri = found.uri;
+      }
       var devs = (await spGet('/v1/me/player/devices')).devices || [];
       var dev = devs.find(function (d) { return d.is_active; }) || devs.find(function (d) { return d.type === 'Computer'; }) || devs[0];
       if (!dev) throw 'aucun-appareil';
@@ -514,11 +528,8 @@ const PLAYER_INIT: &str = r#"(function () {
         if (r.status === 403) throw 'premium';
         if (!r.ok && r.status !== 204) throw 'erreur ' + r.status;
       };
-      if (a.op === 'play') {
-        var t = (((await spGet('/v1/search?type=track&limit=1&q=' + encodeURIComponent(a.q))).tracks || {}).items || [])[0];
-        if (!t) throw 'introuvable';
-        await call('PUT', 'play', { uris: [t.uri] });
-      } else if (a.op === 'pause') await call('PUT', 'pause');
+      if (a.op === 'play') await call('PUT', 'play', { uris: [found.uri] });
+      else if (a.op === 'pause') await call('PUT', 'pause');
       else if (a.op === 'resume') await call('PUT', 'play');
       else if (a.op === 'seek') await call('PUT', 'seek?position_ms=' + (parseInt(a.q, 10) || 0));
       out.ok = true;
@@ -687,7 +698,7 @@ async fn update_install(app: AppHandle) -> Result<(), String> {
 /// Commande de lecture envoyée au service connecté (lecture sur le compte de la personne).
 #[tauri::command]
 async fn svc_cmd(app: AppHandle, op: String, q: Option<String>) -> Result<String, String> {
-    if !["play", "pause", "resume", "seek"].contains(&op.as_str()) {
+    if !["play", "pause", "resume", "seek", "state"].contains(&op.as_str()) {
         return Err("commande inconnue".into());
     }
     let w = app.get_webview_window("player").ok_or("lecteur absent")?;
@@ -722,6 +733,7 @@ fn mac_music(op: String, q: Option<String>, artist: Option<String>) -> Result<St
             "set r to (every track of library playlist 1 whose name is \"{}\" and artist contains \"{}\")\nif r is {{}} then set r to (every track of library playlist 1 whose name contains \"{}\" and artist contains \"{}\")\nif r is {{}} then return \"absent\"\nplay item 1 of r\nreturn \"ok\"",
             esc(&q), esc(&artist.clone().unwrap_or_default()), esc(&q), esc(&artist.unwrap_or_default())
         ),
+        "state" => "return \"st|\" & (player position as text) & \"|\" & (player state as text)".into(),
         "pause" => "pause\nreturn \"ok\"".into(),
         "resume" => "play\nreturn \"ok\"".into(),
         "seek" => format!("set player position to {}\nreturn \"ok\"", q.parse::<f64>().unwrap_or(0.0) / 1000.0),
@@ -730,6 +742,12 @@ fn mac_music(op: String, q: Option<String>, artist: Option<String>) -> Result<St
     let script = format!("tell application \"Music\"\n{body}\nend tell");
     let out = std::process::Command::new("osascript").arg("-e").arg(script).output().map_err(|e| e.to_string())?;
     let txt = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if let Some(rest) = txt.strip_prefix("st|") {
+        let mut it = rest.split('|');
+        let pos = it.next().unwrap_or("0").replace(',', ".").parse::<f64>().unwrap_or(0.0);
+        let playing = it.next().unwrap_or("") == "playing";
+        return Ok(json!({ "ok": true, "pos": (pos * 1000.0) as i64, "playing": playing }).to_string());
+    }
     Ok(if txt == "ok" { json!({ "ok": true }) } else { json!({ "ok": false, "why": if txt.is_empty() { "refus" } else { txt.as_str() } }) }.to_string())
 }
 

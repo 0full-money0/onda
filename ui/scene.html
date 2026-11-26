@@ -760,26 +760,76 @@ async function loadArtist(raw) {
 // ================= lecture : l'app lance elle-même le titre =================
 let queue = [], qi = -1, navAt = 0;
 const direct = () => isWeb();
-let nativeOn = false;   // le son vient de l'app du service (Spotify), le clip YouTube est muet
+let nativeOn = false;   // le son vient de l'app de la plateforme, le clip YouTube est muet
+let natMode = '', natPos = null, natTimer = 0, sysSt = null;
+const IS_WIN = /Win/.test(navigator.platform || navigator.userAgent);
 const IS_MAC = /Mac/.test(navigator.platform || navigator.userAgent);
 const svcCall = (args) => S.service === 'apple' ? invoke('mac_music', { op: args.op, q: args.q || '' })
   : (dataChain = dataChain.then(() => invoke('svc_cmd', args), () => invoke('svc_cmd', args)));
 function applyAudio(p) { try { if (nativeOn) p.mute(); else { p.unMute(); p.setVolume(100); } } catch {} }
-async function nativePlay(t) {
-  nativeOn = false;
-  if (S.service === 'apple') {   // Mac : le son vient de l'app Musique
-    if (!IS_MAC) return;
-    let r = null; try { r = JSON.parse(await invoke('mac_music', { op: 'play', q: t.name, artist: t.artist })); } catch {}
-    if (r && r.ok) { nativeOn = true; return; }
-    return toast(r && r.why === 'absent' ? 'Ce titre n’est pas dans ta bibliothèque de l’app Musique : le son passe par le clip.' : 'L’app Musique n’a pas pu lancer ce titre (autorise Onda dans Réglages › Confidentialité › Automatisation). Le son passe par le clip.');
+const APPNAME = { spotify: /spotify/i, deezer: /deezer/i, apple: /apple|music|itunes/i };
+// Position réelle du son (celle de la plateforme) : les paroles et la barre la suivent.
+function natNow() {
+  if (!nativeOn) return null;
+  if (natMode === 'sys' && sysSt && APPNAME[S.service] && APPNAME[S.service].test(sysSt.app || '')) return sysSt.playing ? sysSt.pos + (Date.now() - sysSt.at) : sysSt.pos;
+  if (natPos) return natPos.playing ? natPos.pos + (Date.now() - natPos.at) : natPos.pos;
+  return null;
+}
+async function natPoll() {
+  if (!nativeOn || natMode === 'sys') return;
+  try {
+    const r = JSON.parse(await svcCall({ op: 'state' }));
+    if (r && r.ok) natPos = { pos: r.pos || 0, playing: !!r.playing, at: Date.now() };
+  } catch {}
+}
+function natStart(mode) {
+  nativeOn = true; natMode = mode; natPos = null;
+  try { if (player && playerOk) applyAudio(player); } catch {}
+  clearInterval(natTimer); natTimer = setInterval(natPoll, 2500); natPoll();
+}
+// Attend que l'app du PC joue bien ce titre (Windows sait quelle app joue quoi).
+async function natVerify(t, re) {
+  for (let i = 0; i < 24; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    const ti = sysSt ? norm(sysSt.title) : '', want = norm(t.name);
+    if (sysSt && sysSt.playing && re.test(sysSt.app || '') && ti && (ti.includes(want) || want.includes(ti))) return true;
   }
-  if (S.service !== 'spotify') return;
-  let r = null; try { r = JSON.parse(await svcCall({ op: 'play', q: `${t.artist} ${t.name}` })); } catch {}
-  if (r && r.ok) { nativeOn = true; return; }
-  const w = (r && r.why) || '';
-  toast(w === 'aucun-appareil' ? 'Ouvre l’app Spotify sur ce PC pour que le son vienne de ton compte. En attendant, le son passe par YouTube.'
-    : w === 'premium' ? 'Spotify Premium est nécessaire pour lancer un titre depuis Onda. Le son passe par YouTube.'
-    : 'Spotify n’a pas pu lancer ce titre. Le son passe par YouTube.');
+  return false;
+}
+const backToOnda = () => setTimeout(() => invoke('win', { action: 'show' }), 1200);   // l'app du service passe devant : Onda reprend la main
+async function nativePlay(t) {
+  nativeOn = false; natMode = ''; natPos = null; clearInterval(natTimer);
+  const tok = playTok, sv = S.service;
+  const fail = (msg) => { if (tok === playTok) toast(msg + ' Le son passe par le clip en attendant.'); };
+  if (sv === 'apple') {   // Mac : l'app Musique ; Windows : pas de moyen de piloter Apple Music
+    if (!IS_MAC) return fail('Apple Music ne peut pas être piloté sur ce PC.');
+    let r = null; try { r = JSON.parse(await invoke('mac_music', { op: 'play', q: t.name, artist: t.artist })); } catch {}
+    if (tok !== playTok) return;
+    if (r && r.ok) return natStart('mac');
+    return fail(r && r.why === 'absent' ? 'Ce titre n’est pas dans ta bibliothèque de l’app Musique.' : 'L’app Musique n’a pas pu lancer ce titre (autorise Onda dans Réglages › Confidentialité › Automatisation).');
+  }
+  if (sv === 'spotify') {
+    let r = null; try { r = JSON.parse(await svcCall({ op: 'play', q: `${t.artist} ${t.name}` })); } catch {}
+    if (tok !== playTok) return;
+    if (r && r.ok) return natStart('api');   // Premium : lancé à distance
+    if (r && r.uri) {   // sans Premium, ou app fermée : on demande à l'app Spotify du PC d'ouvrir le titre
+      invoke('open_url', { url: r.uri }); backToOnda();
+      if (!IS_WIN) { natStart('api'); return; }
+      if (await natVerify(t, APPNAME.spotify)) { if (tok === playTok) natStart('sys'); return; }
+      return fail('L’app Spotify n’a pas démarré ce titre.');
+    }
+    return fail(r && r.why === 'introuvable' ? 'Titre introuvable sur Spotify.' : 'Spotify ne répond pas.');
+  }
+  if (sv === 'deezer') {   // l'app Deezer du PC lance le titre
+    let id = t.dz || '';
+    if (!id) { const r = await getJson(DZ + '/search?' + new URLSearchParams({ q: `artist:"${t.artist}" track:"${t.name}"`, limit: '1' })); id = r && r.data && r.data[0] && r.data[0].id; }
+    if (tok !== playTok) return;
+    if (!id) return fail('Titre introuvable sur Deezer.');
+    if (!IS_WIN) return;   // sans moyen de vérifier, on garde le son du clip
+    invoke('open_url', { url: 'deezer://www.deezer.com/track/' + id }); backToOnda();
+    if (await natVerify(t, APPNAME.deezer)) { if (tok === playTok) natStart('sys'); return; }
+    return fail('L’app Deezer n’a pas démarré ce titre (elle doit être installée sur ce PC).');
+  }
 }
 // mémoire des clips : un titre déjà joué se relance tout de suite
 const vcKey = (t) => 'vc:' + norm(t.artist) + '|' + norm(t.name);
@@ -1224,7 +1274,7 @@ function lyrOffset() {
 }
 setInterval(() => {
   if (!document.body.classList.contains('lyr')) return;
-  const ms = nowPos(st) - lyrOffset(); let i = -1;
+  const nn = natNow(), ms = nn != null ? nn - lyrUser() : nowPos(st) - lyrOffset(); let i = -1;
   for (let k = 0; k < lyr.length; k++) { if (lyr[k].t <= ms + 120) i = k; else break; }
   if (i === lyrIdx) return;
   lyrIdx = i;
@@ -1306,6 +1356,7 @@ function playNextId() {
         if (e.data === 1) { noCaptions(e.target); applyAudio(e.target); rememberVid(); setTimeout(prefetchNext, 4000); }
         if (e.data === -1 || e.data === 5) { const tgt = e.target; setTimeout(() => { try { if (tgt.getPlayerState() === -1 || tgt.getPlayerState() === 5) { tgt.mute(); tgt.playVideo(); if (!nativeOn) { toast('Clique n’importe où pour activer le son.'); addEventListener('pointerdown', () => applyAudio(tgt), { once: true, capture: true }); } } } catch {} }, 3500); }
         else if (e.data === 0) {    // fin du titre : répétition, ou suivant dans la file
+          if (nativeOn) { e.target.seekTo(0); e.target.playVideo(); return; }   // le clip muet tourne en boucle : la plateforme décide de la fin
           if (S.repeat) { e.target.seekTo(0); e.target.playVideo(); } else if (queue[qi + 1]) step(1);
         }
         if (e.data === 1) setTimeout(showVideo, 900); else showVideo();   // on laisse passer l'icône de lecture de YouTube
@@ -1323,8 +1374,13 @@ function showVideo() {
 function syncVideo() { showVideo(); }
 function togglePlay() {
   const ps = player && playerOk && direct() ? player.getPlayerState() : -1;
-  if (nativeOn) svcCall({ op: ps === 1 ? 'pause' : 'resume' }).catch(() => {});
-  if (ps === 1) { hideVideo(); player.pauseVideo(); } else if (ps === 2) player.playVideo();   // le clip s'efface avant la pause : pas de gros bouton else invoke('media_cmd', { name: 'toggle' });
+  if (nativeOn) {
+    if (natMode === 'sys') invoke('media_cmd', { name: 'toggle' }); else svcCall({ op: ps === 1 ? 'pause' : 'resume' }).catch(() => {});
+    if (natPos) natPos = { pos: natNow() || 0, playing: ps !== 1, at: Date.now() };
+  }
+  if (ps === 1) { hideVideo(); player.pauseVideo(); }   // le clip s'efface avant la pause : pas de gros bouton
+  else if (ps === 2) player.playVideo();
+  else invoke('media_cmd', { name: 'toggle' });
 }
 
 fitVideo();
@@ -1424,6 +1480,13 @@ function renderSettings() {
 let endLock = false;
 function nearEnd() {
   if (!(player && playerOk && direct()) || endLock) return;
+  const nn = natNow(), q = queue[qi];
+  if (nn != null && q && q.ms) {   // le son vient de la plateforme : sa fin décide
+    if (nn < q.ms - 1200) return;
+    endLock = true; setTimeout(() => { endLock = false; }, 5000);
+    if (S.repeat) nativePlay(q); else if (queue[qi + 1]) step(1);
+    return;
+  }
   try {
     const d = player.getDuration(), c = player.getCurrentTime();
     if (!(d > 0 && d - c < 1.7 && player.getPlayerState() === 1)) return;
@@ -1679,14 +1742,15 @@ function onState(s) {
 }
 // Quand c'est l'app qui joue, l'état vient directement de son lecteur (identique sur Windows, Mac et Linux).
 const ownPlayer = () => direct() && player && playerOk && qi >= 0 && !!queue[qi];
-listen('state', (s) => { if (!ownPlayer()) onState(s); });
+listen('state', (s) => { sysSt = { ...s, at: s.at || Date.now() }; if (!ownPlayer()) onState(s); });
 setInterval(() => {
   if (!ownPlayer()) return;
   let ps = -1, cur = 0, dur = 0;
   try { ps = player.getPlayerState(); cur = player.getCurrentTime() || 0; dur = player.getDuration() || 0; } catch { return; }
   const q = queue[qi];
   if ((q.art || '') && art !== q.art) { art = q.art; cardKey = ''; sideKey = ''; buildCards(); buildSide(); renderArt(); }
-  onState({ title: q.name, artist: q.artist, album: q.album || '', app: 'onda', playing: ps === 1 || ps === 3, pos: Math.round(cur * 1000), dur: Math.round(dur * 1000), at: Date.now() });
+  const nn = natNow();
+  onState({ title: q.name, artist: q.artist, album: q.album || '', app: 'onda', playing: nn != null ? (natPos ? natPos.playing : true) : ps === 1 || ps === 3, pos: Math.round(nn != null ? nn : cur * 1000), dur: nn != null && q.ms ? q.ms : Math.round(dur * 1000), at: Date.now() });
 }, 500);
 listen('art', (x) => { if (ownPlayer()) return; art = x; buildCards(); buildSide(); renderArt(); });
 listen('settings', (s) => { S = s; renderSettings(); });
