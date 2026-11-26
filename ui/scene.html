@@ -368,6 +368,8 @@
   #mark { display:none !important; }
   #brand { position:fixed; inset:0; display:grid; place-content:center; justify-items:center; pointer-events:none; opacity:0; transition:opacity .9s var(--ease); }
   body.loading #brand { opacity:1; }
+  body:not(.loading) #brand .bb i { animation-play-state:paused; }
+  #splash.dead { display:none; }
   #brand .bb { display:flex; align-items:center; gap:1.6vh; height:24vh; }
   #brand .bb i { width:2vh; height:var(--h); border-radius:1.2vh; background:linear-gradient(#fff3e0, var(--c1) 50%, var(--c2)); opacity:.95; box-shadow:0 0 3vh color-mix(in srgb, var(--c1) 60%, transparent); animation:sbeat .6s ease-in-out calc(var(--i) * 90ms) infinite alternate; }
   #brand b { margin-top:3vh; font-size:11vh; font-weight:800; letter-spacing:.45em; padding-left:.45em; color:rgba(255,255,255,.85); text-shadow:0 0 4vh color-mix(in srgb, var(--c1) 70%, transparent); }
@@ -618,8 +620,10 @@ async function chooseService(id, forceLogin) {
   try { await invoke('open_service', { id, show: true, login: true }); setView('service'); }
   catch (e) { toast('Impossible d\u2019ouvrir ce service : ' + e); }
 }
+let svcKey = '';
 function renderService() {
-  const s = svc();
+  const s = svc(), key = (S.service || '') + '|' + (st.app || '');
+  if (key === svcKey) return; svcKey = key;
   $('srcName').textContent = s ? (s.id === 'system' ? (st.app ? appName(st.app) : 'App de ce PC') : s.name) : 'Service';
   $('srcDot').innerHTML = s ? s.icon : ''; $('srcDot').style.setProperty('--sc', s ? s.color : '#fff');
   $('lib').dataset.svc = S.service || ''; $('libName').textContent = s && s.id !== 'system' ? s.name : 'Onda'; $('libDot').innerHTML = s ? s.icon : '';
@@ -1313,8 +1317,11 @@ function lightTick() {
   $('halo').style.opacity = Math.min(0.9, (0.12 + level * 0.35 + pulse * 0.5) * (0.4 + k)).toFixed(2);
   if (S.sparks) sparkBox.style.opacity = Math.min(1, 0.4 + level * 0.8 + pulse * 0.5).toFixed(2);
 }
+let lightWas = null;
 function lightApply() {
   const active = !!(S.light && st.playing && !document.hidden);
+  if (active === lightWas && (active ? lTimer : true)) { sparkBox.style.display = S.sparks ? '' : 'none'; return; }
+  lightWas = active;
   clearTimeout(lOff);
   sparkBox.style.display = S.sparks ? '' : 'none';
   if (active) { fx.classList.remove('off'); void fx.offsetWidth; fx.classList.add('on'); if (!lTimer) lTimer = setInterval(lightTick, FRAME); }
@@ -1507,10 +1514,23 @@ setInterval(checkUpdate, 6 * 3600 * 1000);
 // ================= profondeur 3D : tête (caméra) ou souris =================
 const headT = { x: 0, y: 0, z: 0 }, headC = { x: 0, y: 0, z: 0 };
 let depthRaf = 0, cam = null, camOn = false, faceDet = null, camRaf = 0, lastDet = 0;
+let depthEls = null;
+function depthPaint(x, y, z) {
+  if (!depthEls) depthEls = ['#bg', '#vid', '.clock', '.flow', '.side', '.saur', '.slogo'].map(q => [...document.querySelectorAll(q)]);
+  const [bg, vid, clock, flow, side, saur, slogo] = depthEls, f = (v) => v.toFixed(2);
+  const set = (els, prop, val) => { for (const e of els) e.style[prop] = val; };
+  set(bg, 'translate', `${f(x * -2.4)}vw ${f(y * -2.4)}vh`); set(bg, 'scale', (1 + z * 0.05).toFixed(3));
+  set(vid, 'translate', `${f(x * -2.4)}vw ${f(y * -2.4)}vh`);
+  set(clock, 'transform', `translate(${f(x * 0.9)}vw, ${f(y * 0.9)}vh)`);
+  set(flow, 'transform', `translate(${f(x * 1.6)}vw, ${f(y * 1.1)}vh)`);
+  set(side, 'transform', `translate(${f(x * 1.2)}vw, ${f(y * 0.9)}vh) perspective(1000px) rotateY(-24deg)`);
+  set(saur, 'translate', `${f(x * -3.5)}vw ${f(y * -3.5)}vh`);
+  set(slogo, 'transform', `translate(${f(x * 2)}vw, ${f(y * 1.6)}vh)`);
+}
 function depthLoop() {
   let moving = false;
   for (const a of ['x', 'y', 'z']) { const d = headT[a] - headC[a]; if (Math.abs(d) > 0.002) moving = true; headC[a] += d * 0.12; }
-  root.setProperty('--hx', headC.x.toFixed(3)); root.setProperty('--hy', headC.y.toFixed(3)); root.setProperty('--hz', headC.z.toFixed(3));
+  depthPaint(headC.x, headC.y, headC.z);
   depthRaf = moving || camOn ? requestAnimationFrame(depthLoop) : 0;
 }
 const kickDepth = () => { if (!depthRaf) depthRaf = requestAnimationFrame(depthLoop); };
@@ -1632,7 +1652,7 @@ function start() {
     loadAccount();   // la musique du compte, une fois la page du service chargée
     if (S.cam) camStart();   // l'effet 3D démarre dès l'intro
     // lancement : le logo se dessine, puis l'interface arrive par vagues
-    setTimeout(() => { $('splash').classList.add('gone'); document.body.classList.add('ready'); setTimeout(() => document.body.classList.add('settled'), 1600); }, 3700);
+    setTimeout(() => { $('splash').classList.add('gone'); document.body.classList.add('ready'); setTimeout(() => { document.body.classList.add('settled'); $('splash').classList.add('dead'); }, 1600); }, 3700);
   }).catch(() => setTimeout(start, 500));
 }
 start();
