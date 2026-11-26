@@ -399,6 +399,14 @@
   @keyframes kblur { from { opacity:0; filter:blur(2vh); transform:scale(1.2); } to { opacity:1; filter:none; transform:none; } }
   @keyframes kdrop { from { opacity:0; transform:translateY(-8vh) scaleY(1.6); } to { opacity:1; transform:none; } }
 
+  /* ---------- retour visuel immédiat au clic ---------- */
+  .hit { animation:hit .5s cubic-bezier(.2,.9,.25,1); }
+  @keyframes hit { 0% { filter:brightness(1.9) saturate(1.3); box-shadow:0 0 0 .3vh var(--ac), 0 0 4vh color-mix(in srgb, var(--ac) 70%, transparent); }
+    100% { filter:none; box-shadow:0 0 0 0 transparent, 0 0 0 transparent; } }
+  body.lite .hit { animation:hit .4s ease-out !important; }
+  #ntitle.swap, #nsub.swap { animation:swapIn .45s cubic-bezier(.2,.9,.25,1); }
+  @keyframes swapIn { from { opacity:0; transform:translateY(1vh); } }
+
   /* ---------- interactions à la souris ---------- */
   #glow { transition:transform .45s ease-out; position:fixed; left:-26vh; top:-26vh; width:52vh; height:52vh; border-radius:50%; pointer-events:none; will-change:transform;
     background:radial-gradient(circle, color-mix(in srgb, var(--c1) 20%, transparent), transparent 66%); }
@@ -783,10 +791,14 @@ async function prefetchNext() {   // prépare le clip du titre suivant pendant q
   const ids = rankVideos(await invoke('video_search', { q: vidQueries(n)[0] }).catch(() => []), n).slice(0, 4);
   if (ids.length) try { localStorage.setItem(vcKey(n), JSON.stringify(ids)); } catch {}
 }
+let playTok = 0;
 async function playTrack(t, stay) {
-  const q = `${t.artist} ${t.name}`;
+  const q = `${t.artist} ${t.name}`, tok = ++playTok;
   try {
     if (isWeb()) {   // tous les services : lecture par le moteur vérifié
+      if (!stay) setView('ambiance');   // tout de suite : on voit que le clic a marché
+      for (const [id, txt] of [['ntitle', t.name], ['nsub', [t.artist, t.album].filter(Boolean).join(' — ')]]) { const el = $(id); el.textContent = txt; el.classList.remove('swap'); void el.offsetWidth; el.classList.add('swap'); }
+      navAt = Date.now(); pushRecent(t);
       vidTrack = t; vidQs = vidQueries(t); vidQi = 0; vidTried = new Set();
       hideVideo(); document.body.classList.add('loading'); clearTimeout(window.__ld); window.__ld = setTimeout(() => document.body.classList.remove('loading'), 14000);
       nativePlay(t);   // en parallèle : le son sur Spotify si possible
@@ -794,8 +806,10 @@ async function playTrack(t, stay) {
       let mem = []; try { mem = JSON.parse(localStorage.getItem(vcKey(t)) || '[]'); } catch {}
       ids = ids.concat(mem.filter(x => !ids.includes(x)));
       if (!ids.length) ids = (await nextVidBatch());   // clip déjà connu : aucune recherche, lancement immédiat
-      if (!ids.length) return toast(`« ${t.name} » est introuvable sur YouTube pour le moment.`);
-      vidIds = ids; vidIdx = 0; await ytApi(); playNextId();
+      if (tok !== playTok) return;   // un autre titre a été choisi entre-temps
+      if (!ids.length) { document.body.classList.remove('loading'); return toast(`« ${t.name} » est introuvable sur YouTube pour le moment.`); }
+      vidIds = ids; vidIdx = 0; await ytApi(); if (tok !== playTok) return; playNextId();
+      return;
     } else if (S.service === 'deezer') {
       let id = t.id;
       if (!id) { const r = await getJson(DZ + '/search?' + new URLSearchParams({ q, limit: '1' })); id = r && r.data && r.data[0] && r.data[0].id; }
@@ -994,6 +1008,11 @@ $('sheet').onclick = (e) => {
   if (act === 'add' && st.playing) return toast('Mets la musique en pause pour ajouter ce titre à ton compte.');
   if (act === 'add') { invoke('player_play', { id: S.service, q: `${t.artist} ${t.name}`, add: true }); toast(`Demande d'ajout envoyée à ${svc().name}.`); }
 };
+$('libBody').oncontextmenu = (e) => {
+  const row = e.target.closest('.lrow'); if (!row) return;
+  const list = libLists[row.dataset.list], k = +row.dataset.k, t = list[k];
+  askTrack(e, { t, list, k, album: (t.kind || '').includes('album') });
+};
 function libGo(p) { libStack.push(lib); lib = p; renderLib(); }
 $('libBack').onclick = () => { lib = libStack.pop() || { page: 'home' }; if (lib.page !== 'search') $('lq').value = ''; renderLib(); };
 $('libBody').onclick = (e) => {
@@ -1001,7 +1020,7 @@ $('libBody').onclick = (e) => {
   if (e.target.closest('[data-fav]') && row) { toggleFav(libLists[row.dataset.list][+row.dataset.k]); e.target.closest('.hb').classList.toggle('on'); return; }
   if (row) {
     const list = libLists[row.dataset.list], k = +row.dataset.k, t = list[k];
-    return askTrack(e, { t, list, k, album: (t.kind || '').includes('album') });
+    return playIt({ t, list, k, album: (t.kind || '').includes('album') });
   }
   const pa = e.target.closest('[data-playall]'); if (pa) return playFrom(libLists[pa.dataset.playall], 0);
   const mo = e.target.closest('[data-more]'); if (mo) { const rows = mo.previousElementSibling; rows.outerHTML = rowsHtml(libLists[mo.dataset.more], mo.dataset.more, 1e9); mo.remove(); return; }
@@ -1058,10 +1077,16 @@ function go(k) { if (document.body.classList.contains('lyr')) return; focus = Ma
 $('flow').onclick = (e) => {
   const el = e.target.closest('.card'); if (!el) return;
   const k = +el.dataset.k;
-  if (k !== focus) return go(k);
-  const c = cards[k]; if (c.q && c.kind.includes('album')) return askTrack(e, { t: { id: c.aid, name: c.title, artist: c.sub, art: c.img }, album: true });
-  if (c.q) return askTrack(e, { t: { name: c.title, artist: c.sub, art: c.img } });
+  const c = cards[k];
+  if (k !== focus) go(k);
+  if (c.q && c.kind.includes('album')) return playIt({ t: { id: c.aid, name: c.title, artist: c.sub, art: c.img }, album: true });
+  if (c.q) return playIt({ t: { name: c.title, artist: c.sub, art: c.img } });
+  if (k !== focus) return;
   if (!c.cur) { libStack = []; lib = { page: 'home' }; libGo({ page: 'album', id: c.id }); setView('library'); }
+};
+$('flow').oncontextmenu = (e) => {
+  const el = e.target.closest('.card'); if (!el) return; const c = cards[+el.dataset.k]; if (!c || !c.q) return;
+  askTrack(e, c.kind.includes('album') ? { t: { id: c.aid, name: c.title, artist: c.sub, art: c.img }, album: true } : { t: { name: c.title, artist: c.sub, art: c.img } });
 };
 $('dots').onclick = (e) => { if (e.target.dataset.k) go(+e.target.dataset.k); };
 let wheelAt = 0;
@@ -1092,13 +1117,14 @@ function buildSide() {
   items.forEach((it, n) => { if (n === nHead && mine.length) html += '<div class="shd">Ta musique</div>'; html += row(it, n); });
   $('side').innerHTML = html;
   if (kfIdx >= 0) { const r = $('side').querySelectorAll('.tr')[kfIdx]; if (r) r.classList.add('kf'); }
-  $('side').onclick = (e) => { const el = e.target.closest('.tr'); if (!el || el.classList.contains('on')) return; askTrack(e, sideItems[+el.dataset.s]); };
+  $('side').onclick = (e) => { const el = e.target.closest('.tr'); if (!el || el.classList.contains('on')) return; playIt(sideItems[+el.dataset.s]); };
+  $('side').oncontextmenu = (e) => { const el = e.target.closest('.tr'); if (el) askTrack(e, sideItems[+el.dataset.s]); };
 }
 
 // Menu d'un titre : lire maintenant, juste après, à la fin de la file, ou favori.
 let actItem = null;
 function askTrack(e, it) {
-  e.stopPropagation();
+  e.stopPropagation(); if (e.preventDefault) e.preventDefault();
   actItem = it; const m = $('act');
   $('actT').textContent = `${it.album ? 'Album · ' : ''}${it.t.name} · ${it.t.artist}`;
   $('actFav').textContent = isFav(it.t) ? 'Retirer des favoris' : 'Ajouter aux favoris';
@@ -1107,9 +1133,21 @@ function askTrack(e, it) {
   m.style.left = Math.min(e.clientX, innerWidth - r.width - 12) + 'px';
   m.style.top = Math.min(e.clientY, innerHeight - r.height - 12) + 'px';
 }
-$('act').onclick = (e) => {
-  const b = e.target.closest('[data-x]'); if (!b || !actItem) return;
-  const it = actItem, t = it.t, x = b.dataset.x, hasQ = direct() && queue.length && qi >= 0;
+$('act').onclick = (e) => { const b = e.target.closest('[data-x]'); if (b && actItem) runAct(actItem, b.dataset.x); };
+// Un clic : le titre part tout de suite. Clic droit : le petit menu (juste après, à la fin, favori).
+let tipShown = false;
+addEventListener('pointerdown', (e) => {   // flash sur ce qu'on vient de toucher
+  if (e.button !== 0) return;
+  const el = e.target.closest && e.target.closest('.tr, .lrow, .card .cv, .card');
+  if (!el) return; el.classList.remove('hit'); void el.offsetWidth; el.classList.add('hit');
+  setTimeout(() => el.classList.remove('hit'), 520);
+}, true);
+function playIt(it) {
+  runAct(it, 'now');
+  if (!tipShown) { tipShown = true; try { if (!localStorage.getItem('tipRc')) { localStorage.setItem('tipRc', '1'); setTimeout(() => toast('Astuce : clic droit sur un titre pour le lire juste après ou l’ajouter à la file.'), 1200); } } catch {} }
+}
+function runAct(it, x) {
+  const t = it.t, hasQ = direct() && queue.length && qi >= 0;
   $('act').classList.remove('open');
   if (it.album && x !== 'fav') {   // un album : on le lance, ou on ajoute tous ses titres à la file
     if (x === 'now' || !hasQ) return playAlbum(t);
@@ -1490,7 +1528,8 @@ addEventListener('keydown', (e) => {
   }
   if (',.-+='.includes(e.key) && e.key.length === 1) return lyrShift(',-'.includes(e.key) ? -500 : 500);
   if (view !== 'home' && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); return kfMove(e.key === 'ArrowDown' ? 1 : -1); }
-  if (view !== 'home' && e.key === 'Enter' && kfIdx >= 0) { e.preventDefault(); return kfOpen(); }
+  if (view !== 'home' && kfIdx >= 0 && (e.key === 'ContextMenu' || e.key === 'm')) { e.preventDefault(); return kfOpen(); }
+  if (view !== 'home' && e.key === 'Enter' && kfIdx >= 0) { e.preventDefault(); const el = $('side').querySelectorAll('.tr')[kfIdx]; if (el) playIt(sideItems[+el.dataset.s]); return; }
   if (view === 'home') {
     if (e.key === 'ArrowRight') return orbGo(orbFocus + 1);
     if (e.key === 'ArrowLeft') return orbGo(orbFocus - 1);
