@@ -692,6 +692,33 @@ async fn svc_cmd(app: AppHandle, op: String, q: Option<String>) -> Result<String
     Err("pas de réponse".into())
 }
 
+#[cfg(not(windows))]
+const UI_PORT: u16 = 47231;
+
+// Mac : le son d'Apple Music passe par l'app Musique (titres de ta bibliothèque)
+#[tauri::command]
+fn mac_music(op: String, q: Option<String>, artist: Option<String>) -> Result<String, String> {
+    if !cfg!(target_os = "macos") {
+        return Ok(json!({ "ok": false, "why": "systeme" }).to_string());
+    }
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    let q = q.unwrap_or_default();
+    let body = match op.as_str() {
+        "play" => format!(
+            "set r to (every track of library playlist 1 whose name is \"{}\" and artist contains \"{}\")\nif r is {{}} then set r to (every track of library playlist 1 whose name contains \"{}\" and artist contains \"{}\")\nif r is {{}} then return \"absent\"\nplay item 1 of r\nreturn \"ok\"",
+            esc(&q), esc(&artist.clone().unwrap_or_default()), esc(&q), esc(&artist.unwrap_or_default())
+        ),
+        "pause" => "pause\nreturn \"ok\"".into(),
+        "resume" => "play\nreturn \"ok\"".into(),
+        "seek" => format!("set player position to {}\nreturn \"ok\"", q.parse::<f64>().unwrap_or(0.0) / 1000.0),
+        _ => return Err("commande inconnue".into()),
+    };
+    let script = format!("tell application \"Music\"\n{body}\nend tell");
+    let out = std::process::Command::new("osascript").arg("-e").arg(script).output().map_err(|e| e.to_string())?;
+    let txt = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok(if txt == "ok" { json!({ "ok": true }) } else { json!({ "ok": false, "why": if txt.is_empty() { "refus" } else { txt.as_str() } }) }.to_string())
+}
+
 #[tauri::command]
 fn player_show(app: AppHandle, show: bool) {
     if let Some(w) = app.get_webview_window("player") {
@@ -1310,7 +1337,11 @@ fn main() {
         preferred: Mutex::new(preferred),
     });
 
-    tauri::Builder::default()
+    // Linux et Mac : l'écran est servi depuis http://localhost, sinon YouTube refuse de lire les clips (origine tauri://)
+    let builder = tauri::Builder::default();
+    #[cfg(not(windows))]
+    let builder = builder.plugin(tauri_plugin_localhost::Builder::new(UI_PORT).build());
+    builder
         .manage(shared.clone())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
@@ -1331,7 +1362,7 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_scene(app)))
-        .invoke_handler(tauri::generate_handler![init, set_settings, set_source, spotify_status, spotify_connect, spotify_disconnect, spotify_api, video_search, open_service, player_open, player_play, player_data, update_check, update_install, svc_cmd, player_show, player_nav, player_search, close_service, media_cmd, http_get, open_url, wallpaper, win])
+        .invoke_handler(tauri::generate_handler![init, set_settings, set_source, spotify_status, spotify_connect, spotify_disconnect, spotify_api, video_search, open_service, player_open, player_play, player_data, update_check, update_install, svc_cmd, mac_music, player_show, player_nav, player_search, close_service, media_cmd, http_get, open_url, wallpaper, win])
         .on_window_event(|w, e| {
             if let WindowEvent::CloseRequested { api, .. } = e {
                 if w.label() == "scene" {
@@ -1352,6 +1383,12 @@ fn main() {
                 }
                 let _ = ov.set_ignore_cursor_events(true);
                 let _ = ov.show();
+            }
+            #[cfg(not(windows))]
+            if let Some(w) = app.get_webview_window("scene") {
+                if let Ok(u) = tauri::Url::parse(&format!("http://localhost:{UI_PORT}/scene.html")) {
+                    let _ = w.navigate(u);
+                }
             }
             show_scene(&handle);
             {

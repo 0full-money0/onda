@@ -1,6 +1,15 @@
 {
   "identifier": "default",
   "description": "Écran principal d'Onda (les pages des services de musique n'ont aucun accès à l'app)",
-  "windows": ["scene"],
-  "permissions": ["core:default"]
+  "windows": [
+    "scene"
+  ],
+  "permissions": [
+    "core:default"
+  ],
+  "remote": {
+    "urls": [
+      "http://localhost:47231/*"
+    ]
+  }
 }

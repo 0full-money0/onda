@@ -1,6 +1,6 @@
 [package]
 name = "lueur"
-version = "1.0.8"
+version = "1.0.9"
 description = "La lumière qui danse avec ta musique."
 edition = "2021"
 
@@ -24,6 +24,9 @@ getrandom = "0.2"
 [profile.release]
 opt-level = 3
 strip = true
+
+[target.'cfg(not(windows))'.dependencies]
+tauri-plugin-localhost = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

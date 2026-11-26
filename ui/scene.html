@@ -748,10 +748,18 @@ async function loadArtist(raw) {
 let queue = [], qi = -1, navAt = 0;
 const direct = () => isWeb();
 let nativeOn = false;   // le son vient de l'app du service (Spotify), le clip YouTube est muet
-const svcCall = (args) => (dataChain = dataChain.then(() => invoke('svc_cmd', args), () => invoke('svc_cmd', args)));
+const IS_MAC = /Mac/.test(navigator.platform || navigator.userAgent);
+const svcCall = (args) => S.service === 'apple' ? invoke('mac_music', { op: args.op, q: args.q || '' })
+  : (dataChain = dataChain.then(() => invoke('svc_cmd', args), () => invoke('svc_cmd', args)));
 function applyAudio(p) { try { if (nativeOn) p.mute(); else { p.unMute(); p.setVolume(100); } } catch {} }
 async function nativePlay(t) {
   nativeOn = false;
+  if (S.service === 'apple') {   // Mac : le son vient de l'app Musique
+    if (!IS_MAC) return;
+    let r = null; try { r = JSON.parse(await invoke('mac_music', { op: 'play', q: t.name, artist: t.artist })); } catch {}
+    if (r && r.ok) { nativeOn = true; return; }
+    return toast(r && r.why === 'absent' ? 'Ce titre n’est pas dans ta bibliothèque de l’app Musique : le son passe par le clip.' : 'L’app Musique n’a pas pu lancer ce titre (autorise Onda dans Réglages › Confidentialité › Automatisation). Le son passe par le clip.');
+  }
   if (S.service !== 'spotify') return;
   let r = null; try { r = JSON.parse(await svcCall({ op: 'play', q: `${t.artist} ${t.name}` })); } catch {}
   if (r && r.ok) { nativeOn = true; return; }
@@ -1253,6 +1261,7 @@ function playNextId() {
       onError: (e) => { if (window.__dbg) toast('erreur lecteur ' + e.data + ' (essai ' + vidIdx + '/' + vidIds.length + ')'); playNextId(); },
       onStateChange: (e) => {
         if (e.data === 1) { noCaptions(e.target); applyAudio(e.target); rememberVid(); setTimeout(prefetchNext, 4000); }
+        if (e.data === -1 || e.data === 5) { const tgt = e.target; setTimeout(() => { try { if (tgt.getPlayerState() === -1 || tgt.getPlayerState() === 5) { tgt.mute(); tgt.playVideo(); if (!nativeOn) { toast('Clique n’importe où pour activer le son.'); addEventListener('pointerdown', () => applyAudio(tgt), { once: true, capture: true }); } } } catch {} }, 3500); }
         else if (e.data === 0) {    // fin du titre : répétition, ou suivant dans la file
           if (S.repeat) { e.target.seekTo(0); e.target.playVideo(); } else if (queue[qi + 1]) step(1);
         }
