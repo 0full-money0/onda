@@ -66,7 +66,16 @@ Raccourcis : `Espace` lecture / pause · `←` `→` parcourir · `Échap` reven
 
 ## Bon à savoir
 
-- **D'où vient le son** : Onda joue le **clip officiel** de chaque titre, via YouTube. Le son et l'image sont donc synchronisés, mais **des publicités YouTube peuvent apparaître** sur certains titres, et la version jouée peut parfois différer de l'album. Ton compte Apple Music, Spotify ou YouTube Music sert à retrouver ta bibliothèque, pas à produire le son : leurs lecteurs protégés refusent de fonctionner dans une autre application.
+- **D'où vient le son** : Onda essaie de jouer le son **sur ta plateforme**, dans son lecteur caché où tu es connecté, sans ouvrir d'autre application. Le clip YouTube reste alors à l'image, sans son. C'est nouveau et encore peu testé :
+
+  | Service | Windows | Mac | Linux |
+  |---|---|---|---|
+  | Spotify | oui | oui | non |
+  | Apple Music | oui | oui | non |
+  | Deezer, SoundCloud, YouTube Music | oui | oui | oui |
+  | Amazon Music | non | non | non |
+
+  Quand la plateforme refuse de jouer dans Onda (ses protections anti-copie, ou Linux), le son vient du **clip officiel** sur YouTube : **des publicités YouTube peuvent alors apparaître**, et la version peut différer de l'album. Onda te le signale à chaque fois.
 - **Ta bibliothèque** : Apple Music est testée. Spotify et YouTube Music sont prises en charge mais encore peu testées : si ta bibliothèque n'apparaît pas, signale-le dans l'onglet **Issues**. Pour Deezer, SoundCloud et Amazon Music, utilise la recherche.
 - **Linux (.deb)** : la version `.deb` ne se met pas à jour toute seule ; télécharge la nouvelle version à la main, ou utilise l'AppImage.
 - **Paroles** : elles viennent de [LRCLIB](https://lrclib.net). Certains titres n'en ont pas.

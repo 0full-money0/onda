@@ -764,8 +764,7 @@ let nativeOn = false;   // le son vient de l'app de la plateforme, le clip YouTu
 let natMode = '', natPos = null, natTimer = 0, sysSt = null;
 const IS_WIN = /Win/.test(navigator.platform || navigator.userAgent);
 const IS_MAC = /Mac/.test(navigator.platform || navigator.userAgent);
-const svcCall = (args) => S.service === 'apple' ? invoke('mac_music', { op: args.op, q: args.q || '' })
-  : (dataChain = dataChain.then(() => invoke('svc_cmd', args), () => invoke('svc_cmd', args)));
+const svcCall = (args) => (dataChain = dataChain.then(() => invoke('svc_cmd', args), () => invoke('svc_cmd', args)));
 function applyAudio(p) { try { if (nativeOn) p.mute(); else { p.unMute(); p.setVolume(100); } } catch {} }
 const APPNAME = { spotify: /spotify/i, deezer: /deezer/i, apple: /apple|music|itunes/i };
 // Position réelle du son (celle de la plateforme) : les paroles et la barre la suivent.
@@ -778,7 +777,7 @@ function natNow() {
 async function natPoll() {
   if (!nativeOn || natMode === 'sys') return;
   try {
-    const r = JSON.parse(await svcCall({ op: 'state' }));
+    const r = JSON.parse(await svcCall({ op: natMode === 'web' ? 'mstate' : 'state' }));
     if (r && r.ok) natPos = { pos: r.pos || 0, playing: !!r.playing, at: Date.now() };
   } catch {}
 }
@@ -819,36 +818,19 @@ async function nativePlay(t) {
   nativeOn = false; natMode = ''; natPos = null; clearInterval(natTimer); scStop();
   const tok = playTok, sv = S.service;
   const fail = (msg) => { if (tok === playTok) toast(msg + ' Le son passe par le clip en attendant.'); };
-  if (sv === 'apple' && IS_WIN) {   // Windows : l'app Apple Music ouvre le lien music:// du titre
-    if (!(await invoke('has_app', { scheme: 'music' }).catch(() => false))) return fail('Installe l’app Apple Music (Microsoft Store) pour que le son vienne de ton compte.');
-    const cc = ((navigator.language || 'fr-FR').split('-')[1] || 'FR').toLowerCase();
-    const r = await getJson('https://itunes.apple.com/search?' + new URLSearchParams({ term: `${t.artist} ${t.name}`, entity: 'song', limit: '1', country: cc }));
-    const hit = r && r.results && r.results[0];
-    if (tok !== playTok) return;
-    if (!(hit && hit.trackViewUrl)) return fail('Titre introuvable sur Apple Music.');
-    invoke('open_url', { url: hit.trackViewUrl.replace(/^https:/, 'music:').replace(/&uo=\d+/, '') }); backToOnda();
-    if (await natVerify(t, /apple/i)) { if (tok === playTok) natStart('sys'); return; }
-    return fail('L’app Apple Music a ouvert le titre sans le lancer.');
-  }
-  if (sv === 'apple') {   // Mac : l'app Musique
-    if (!IS_MAC) return fail('Apple Music ne peut pas être piloté sur ce système.');
-    let r = null; try { r = JSON.parse(await invoke('mac_music', { op: 'play', q: t.name, artist: t.artist })); } catch {}
-    if (tok !== playTok) return;
-    if (r && r.ok) return natStart('mac');
-    return fail(r && r.why === 'absent' ? 'Ce titre n’est pas dans ta bibliothèque de l’app Musique.' : 'L’app Musique n’a pas pu lancer ce titre (autorise Onda dans Réglages › Confidentialité › Automatisation).');
-  }
-  if (sv === 'spotify') {
+  const IS_LINUX = !IS_WIN && !IS_MAC;
+  if ((sv === 'spotify' || sv === 'apple') && IS_LINUX) return fail(`${sv === 'spotify' ? 'Spotify' : 'Apple Music'} ne peut pas jouer dans Onda sous Linux (le moteur web de Linux n’a pas leur protection anti-copie).`);
+  if (sv === 'apple') {   // le lecteur Apple Music caché dans Onda joue le titre (Windows : Widevine, Mac : FairPlay)
     let r = null; try { r = JSON.parse(await svcCall({ op: 'play', q: `${t.artist} ${t.name}` })); } catch {}
     if (tok !== playTok) return;
-    if (r && r.ok) return natStart('api');   // Premium : lancé à distance
-    if (r && r.uri) {   // sans Premium, ou app fermée : on demande à l'app Spotify du PC d'ouvrir le titre
-      if (IS_WIN && !(await invoke('has_app', { scheme: 'spotify' }).catch(() => false))) return fail(r.why === 'premium' ? 'Spotify Premium ou l’app Spotify pour PC est nécessaire.' : 'Installe l’app Spotify pour PC pour que le son vienne de ton compte.');
-      invoke('open_url', { url: r.uri }); backToOnda();
-      if (!IS_WIN) { natStart('api'); return; }
-      if (await natVerify(t, APPNAME.spotify)) { if (tok === playTok) natStart('sys'); return; }
-      return fail('L’app Spotify n’a pas démarré ce titre.');
-    }
-    return fail(r && r.why === 'introuvable' ? 'Titre introuvable sur Spotify.' : 'Spotify ne répond pas.');
+    if (r && r.ok) return natStart('api');
+    return fail(r && r.why === 'introuvable' ? 'Titre introuvable sur Apple Music.' : r && r.why === 'jeton' ? 'Connecte-toi à Apple Music dans Onda.' : 'Apple Music refuse de jouer dans Onda sur ce système.');
+  }
+  if (sv === 'spotify') {   // le lecteur Spotify caché dans Onda joue le titre (Premium ou gratuit)
+    let r = null; try { r = JSON.parse(await svcCall({ op: 'play', q: `${t.artist} ${t.name}` })); } catch {}
+    if (tok !== playTok) return;
+    if (r && r.ok) return natStart('api');
+    return fail(r && r.why === 'introuvable' ? 'Titre introuvable sur Spotify.' : r && r.why === 'jeton' ? 'Connecte-toi à Spotify dans Onda.' : 'Spotify n’a pas pu lancer ce titre dans Onda.');
   }
   if (sv === 'soundcloud') {
     let r = null; try { r = JSON.parse(await svcCall({ op: 'play', q: `${t.artist} ${t.name}` })); } catch {}
@@ -860,16 +842,19 @@ async function nativePlay(t) {
     if (ok) { natStart('sc'); clearInterval(natTimer); return; }
     scStop(); return fail('Le lecteur SoundCloud n’a pas démarré.');
   }
-  if (sv === 'deezer') {   // l'app Deezer du PC lance le titre
+  if (sv === 'deezer') {   // le lecteur Deezer caché dans Onda joue le titre
     let id = t.dz || '';
     if (!id) { const r = await getJson(DZ + '/search?' + new URLSearchParams({ q: `artist:"${t.artist}" track:"${t.name}"`, limit: '1' })); id = r && r.data && r.data[0] && r.data[0].id; }
     if (tok !== playTok) return;
     if (!id) return fail('Titre introuvable sur Deezer.');
-    if (!IS_WIN) return;   // sans moyen de vérifier, on garde le son du clip
-    if (!(await invoke('has_app', { scheme: 'deezer' }).catch(() => false))) return fail('Installe l’app Deezer pour PC pour que le son vienne de ton compte.');
-    invoke('open_url', { url: 'deezer://www.deezer.com/track/' + id }); backToOnda();
-    if (await natVerify(t, APPNAME.deezer)) { if (tok === playTok) natStart('sys'); return; }
-    return fail('L’app Deezer n’a pas démarré ce titre (elle doit être installée sur ce PC).');
+    try { await invoke('player_open', { id: 'deezer', path: `/track/${id}?autoplay=true` }); } catch {}
+    for (let i = 0; i < 24; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      if (tok !== playTok) return;
+      let st2 = null; try { st2 = JSON.parse(await svcCall({ op: 'mstate' })); } catch {}
+      if (st2 && st2.playing) return natStart('web');
+    }
+    return fail('Deezer n’a pas lancé ce titre dans Onda.');
   }
 }
 // mémoire des clips : un titre déjà joué se relance tout de suite
@@ -1417,6 +1402,7 @@ function togglePlay() {
   const ps = player && playerOk && direct() ? player.getPlayerState() : -1;
   if (nativeOn) {
     if (natMode === 'sc') { try { scW && scW.toggle(); } catch {} }
+    else if (natMode === 'web') svcCall({ op: 'mtoggle' }).catch(() => {});
     else if (natMode === 'sys') invoke('media_cmd', { name: 'toggle' }); else svcCall({ op: ps === 1 ? 'pause' : 'resume' }).catch(() => {});
     if (natPos) natPos = { pos: natNow() || 0, playing: ps !== 1, at: Date.now() };
   }
@@ -1800,6 +1786,9 @@ listen('art', (x) => { if (ownPlayer()) return; art = x; buildCards(); buildSide
 listen('settings', (s) => { S = s; renderSettings(); });
 invoke('wallpaper').then(async (w) => { wallImg = await loadImg(w); bakedFor = null; renderArt(); });
 
+// Intro deux fois plus rapide : la même animation, l'interface arrive en moins de 2 secondes
+const INTRO_MS = 1850;
+try { $('splash').getAnimations({ subtree: true }).forEach((an) => { an.playbackRate = 2; }); } catch {}
 function start() {
   invoke('init').then((d) => {
     S = d.settings; art = d.art; renderSettings(); st = { title: '\u0000' }; onState(d.state); renderArt();
@@ -1827,7 +1816,7 @@ function start() {
     loadAccount();   // la musique du compte, une fois la page du service chargée
     if (S.cam) camStart();   // l'effet 3D démarre dès l'intro
     // lancement : le logo se dessine, puis l'interface arrive par vagues
-    setTimeout(() => { $('splash').classList.add('gone'); document.body.classList.add('ready'); setTimeout(() => { document.body.classList.add('settled'); $('splash').classList.add('dead'); }, 1600); }, 3700);
+    setTimeout(() => { $('splash').classList.add('gone'); document.body.classList.add('ready'); setTimeout(() => { document.body.classList.add('settled'); $('splash').classList.add('dead'); }, 1200); }, Math.max(0, INTRO_MS - performance.now()));
   }).catch(() => setTimeout(start, 500));
 }
 start();

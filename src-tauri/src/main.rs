@@ -523,6 +523,37 @@ const PLAYER_INIT: &str = r#"(function () {
         out.url = hit.permalink_url; out.ms = hit.full_duration || hit.duration || 0; out.ok = true;
         return send(out);
       }
+      // N'importe quel lecteur web (Deezer…) : ce qui joue, d'après la page elle-même
+      var media = function () { return Array.prototype.slice.call(document.querySelectorAll('audio, video')).find(function (x) { return x.currentSrc || x.src; }); };
+      if (a.op === 'mstate') {
+        var el = media(), ms = navigator.mediaSession;
+        out.playing = (ms && ms.playbackState === 'playing') || !!(el && !el.paused);
+        out.title = (ms && ms.metadata && ms.metadata.title) || ''; out.pos = el ? Math.round(el.currentTime * 1000) : 0; out.ok = true;
+        return send(out);
+      }
+      if (a.op === 'mtoggle') { var me = media(); if (me) { if (me.paused) me.play(); else me.pause(); } out.ok = !!me; return send(out); }
+      // Apple Music joue DANS Onda : le lecteur web caché (MusicKit), là où la personne est connectée
+      if (location.hostname === 'music.apple.com') {
+        var mk = window.MusicKit && MusicKit.getInstance && MusicKit.getInstance();
+        if (!mk) throw 'pas-pret';
+        if (!mk.isAuthorized) throw 'jeton';
+        if (a.op === 'state') { out.playing = !!mk.isPlaying; out.pos = Math.round((mk.currentPlaybackTime || 0) * 1000); out.ok = true; return send(out); }
+        if (a.op === 'play') {
+          var sf = mk.storefrontId || 'fr';
+          var res = await mk.api.music('/v1/catalog/' + sf + '/search', { term: a.q, types: 'songs', limit: 1 });
+          var song = (((res && res.data && res.data.results && res.data.results.songs) || {}).data || [])[0];
+          if (!song) throw 'introuvable';
+          await mk.setQueue({ song: song.id, startPlaying: true });
+          try { await mk.play(); } catch (e) {}
+          for (var q = 0; q < 50 && !mk.isPlaying; q++) await sleep(150);
+          if (!mk.isPlaying) throw 'lecture';
+          out.ok = true; return send(out);
+        }
+        if (a.op === 'pause') mk.pause();
+        else if (a.op === 'resume') await mk.play();
+        else if (a.op === 'seek') await mk.seekToTime((parseInt(a.q, 10) || 0) / 1000);
+        out.ok = true; return send(out);
+      }
       if (location.hostname !== 'open.spotify.com') throw 'non-pris-en-charge';
       if (a.op === 'state') {
         var rs = await fetch('https://api.spotify.com/v1/me/player', { headers: { Authorization: window.__spToken } });
@@ -530,25 +561,47 @@ const PLAYER_INIT: &str = r#"(function () {
         out.playing = !!(js && js.is_playing); out.pos = (js && js.progress_ms) || 0; out.id = (js && js.item && js.item.id) || ''; out.ok = true;
         return send(out);
       }
-      var found = null;
-      if (a.op === 'play') {
-        found = (((await spGet('/v1/search?type=track&limit=1&q=' + encodeURIComponent(a.q))).tracks || {}).items || [])[0];
-        if (!found) throw 'introuvable';
-        out.id = found.id; out.uri = found.uri;
-      }
-      var devs = (await spGet('/v1/me/player/devices')).devices || [];
-      var dev = devs.find(function (d) { return d.is_active; }) || devs.find(function (d) { return d.type === 'Computer'; }) || devs[0];
-      if (!dev) throw 'aucun-appareil';
-      var call = async function (m, path, body) {
+      // Spotify joue DANS Onda : le lecteur web caché (où la personne est connectée) est l'appareil de lecture
+      var waitEl = async function (sel, ms) { for (var i = 0; i < ms / 100; i++) { var e = document.querySelector(sel); if (e) return e; await sleep(100); } return null; };
+      var uiPlaying = function () { var b = document.querySelector('[data-testid="control-button-playpause"]'); return !!b && /pause/i.test(b.getAttribute('aria-label') || ''); };
+      var ownDev = async function () {
+        var devs = (await spGet('/v1/me/player/devices')).devices || [];
+        return devs.find(function (d) { return /web player/i.test(d.name || ''); }) || null;
+      };
+      var call = async function (dev, m, path, body) {
         var r = await fetch('https://api.spotify.com/v1/me/player/' + path + (path.indexOf('?') < 0 ? '?' : '&') + 'device_id=' + encodeURIComponent(dev.id),
           { method: m, headers: { Authorization: window.__spToken, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
         if (r.status === 403) throw 'premium';
         if (!r.ok && r.status !== 204) throw 'erreur ' + r.status;
       };
-      if (a.op === 'play') await call('PUT', 'play', { uris: [found.uri] });
-      else if (a.op === 'pause') await call('PUT', 'pause');
-      else if (a.op === 'resume') await call('PUT', 'play');
-      else if (a.op === 'seek') await call('PUT', 'seek?position_ms=' + (parseInt(a.q, 10) || 0));
+      var dev = null; try { dev = await ownDev(); } catch (e) {}
+      if (a.op === 'play') {
+        var found = (((await spGet('/v1/search?type=track&limit=1&q=' + encodeURIComponent(a.q))).tracks || {}).items || [])[0];
+        if (!found) throw 'introuvable';
+        out.id = found.id; out.uri = found.uri;
+        if (dev) {   // Premium : on lance le titre sur le lecteur caché, sans rien toucher
+          try { await call(dev, 'PUT', 'play', { uris: [found.uri] }); out.ok = true; out.how = 'api'; return send(out); }
+          catch (e) { if (String(e) !== 'premium') out.apiErr = String(e); }
+        }
+        // Gratuit : on ouvre la page du titre dans le lecteur caché et on appuie sur lecture
+        history.pushState({}, '', '/track/' + found.id);
+        window.dispatchEvent(new PopStateEvent('popstate', { state: {} }));
+        await sleep(400);
+        var btn = await waitEl('[data-testid="action-bar-row"] [data-testid="play-button"]', 9000);
+        if (!btn) throw 'page';
+        btn.click();
+        for (var k = 0; k < 50; k++) { if (uiPlaying()) { out.ok = true; out.how = 'page'; return send(out); } await sleep(150); }
+        throw 'lecture';
+      }
+      if (a.op === 'pause' || a.op === 'resume') {
+        try { if (!dev) throw 'premium'; await call(dev, 'PUT', a.op === 'pause' ? 'pause' : 'play'); }
+        catch (e) {   // sans Premium : le bouton du lecteur caché
+          var pp = document.querySelector('[data-testid="control-button-playpause"]');
+          if (pp && (a.op === 'pause') === uiPlaying()) pp.click();
+        }
+      } else if (a.op === 'seek') {
+        if (dev) await call(dev, 'PUT', 'seek?position_ms=' + (parseInt(a.q, 10) || 0));
+      }
       out.ok = true;
     } catch (e) { out.why = String(e); }
     send(out);
@@ -574,6 +627,9 @@ fn build_player(app: &AppHandle, url: tauri::WebviewUrl) -> Result<tauri::Webvie
         .additional_browser_args(BROWSER_ARGS);
     #[cfg(target_os = "linux")]
     let w = w.user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+    // Mac : la fenêtre se présente comme Safari (FairPlay y est disponible) pour que Spotify et Apple Music l'acceptent
+    #[cfg(target_os = "macos")]
+    let w = w.user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15");
     let w = w
         .parent(&scene)
         .map_err(|e| e.to_string())?
@@ -715,7 +771,7 @@ async fn update_install(app: AppHandle) -> Result<(), String> {
 /// Commande de lecture envoyée au service connecté (lecture sur le compte de la personne).
 #[tauri::command]
 async fn svc_cmd(app: AppHandle, op: String, q: Option<String>) -> Result<String, String> {
-    if !["play", "pause", "resume", "seek", "state"].contains(&op.as_str()) {
+    if !["play", "pause", "resume", "seek", "state", "mstate", "mtoggle"].contains(&op.as_str()) {
         return Err("commande inconnue".into());
     }
     let w = app.get_webview_window("player").ok_or("lecteur absent")?;
