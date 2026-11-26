@@ -1141,7 +1141,7 @@ async function loadLyrics() {
   }
   if (!res) {
     const list = await getJson('https://lrclib.net/api/search?' + new URLSearchParams({ track_name: t, artist_name: st.artist }));
-    const hit = (list || []).filter(x => x.syncedLyrics).sort((a, b) => st.dur > 0 ? Math.abs(a.duration * 1000 - st.dur) - Math.abs(b.duration * 1000 - st.dur) : 0)[0];
+    const hit = (list || []).filter(x => x.syncedLyrics).sort((a, b) => albumMs > 0 ? Math.abs(a.duration * 1000 - albumMs) - Math.abs(b.duration * 1000 - albumMs) : 0)[0];
     if (hit) res = parseLrc(hit.syncedLyrics);
   }
   if (key === lyrKey) { lyr = res; lyrIdx = -2; setLyrMode(); }
@@ -1151,12 +1151,25 @@ function setLyrMode() {
   if (document.body.classList.contains('lyr') !== on) { document.body.classList.toggle('lyr', on); lyrIdx = -2; layout(); }
 }
 // Décalage entre le clip (souvent avec une intro) et la version album des paroles.
+// Réglage à la main (touches - et +), retenu pour chaque titre.
+const lyrUserKey = () => 'lyo:' + norm(st.title) + '|' + norm(st.artist);
+const lyrUser = () => { try { return +(localStorage.getItem(lyrUserKey()) || 0); } catch { return 0; } };
+function lyrShift(d) {
+  const v = Math.round((lyrUser() + d) / 100) * 100;
+  try { if (v) localStorage.setItem(lyrUserKey(), String(v)); else localStorage.removeItem(lyrUserKey()); } catch {}
+  lyrIdx = -2; toast(v ? `Paroles ${v > 0 ? 'retardées' : 'avancées'} de ${(Math.abs(v) / 1000).toFixed(1)} s (touches - et +)` : 'Paroles recalées sur la musique.');
+}
 function lyrOffset() {
+  let auto = 0;
   try {
-    if (!ownPlayer()) return 0;
-    const q = queue[qi], d = player.getDuration() * 1000, diff = d - (q.ms || 0);
-    return q.ms && diff > 2500 && diff < 90000 ? diff : 0;
-  } catch { return 0; }
+    // le son vient de Spotify (version album) : les paroles suivent ce son, pas de décalage d'intro
+    if (ownPlayer() && !nativeOn) {
+      const q = queue[qi], d = player.getDuration() * 1000, diff = d - (q.ms || 0);
+      // seule une intro courte est probable ; au-delà, le surplus est souvent à la fin du clip (générique, sketch)
+      if (q.ms && diff > 2500 && diff < 25000) auto = diff;
+    }
+  } catch {}
+  return auto + lyrUser();
 }
 setInterval(() => {
   if (!document.body.classList.contains('lyr')) return;
@@ -1461,6 +1474,7 @@ addEventListener('keydown', (e) => {
     else if (e.key === 'Escape') $('act').classList.remove('open');
     return;
   }
+  if (',.-+='.includes(e.key) && e.key.length === 1) return lyrShift(',-'.includes(e.key) ? -500 : 500);
   if (view !== 'home' && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); return kfMove(e.key === 'ArrowDown' ? 1 : -1); }
   if (view !== 'home' && e.key === 'Enter' && kfIdx >= 0) { e.preventDefault(); return kfOpen(); }
   if (view === 'home') {
