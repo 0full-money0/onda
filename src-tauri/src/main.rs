@@ -141,10 +141,16 @@ fn video_search_once(q: &str) -> Vec<Value> {
             .and_then(|k| json_str_after(&seg[k..], "\"simpleText\":\""))
             .map(|t| t.split(':').fold(0u64, |a, p| a * 60 + p.trim().parse::<u64>().unwrap_or(0)))
             .unwrap_or(0);
+        let views = seg
+            .find("\"viewCountText\"")
+            .and_then(|k| json_str_after(&seg[k..], "\"simpleText\":\""))
+            .map(|t| t.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse::<u64>().unwrap_or(0))
+            .unwrap_or(0);
+        let channel = seg.find("\"ownerText\"").and_then(|k| json_str_after(&seg[k..], "\"text\":\"")).unwrap_or_default();
         if !out.iter().any(|x| x["id"] == id) {
-            out.push(json!({ "id": id, "title": title, "secs": secs }));
+            out.push(json!({ "id": id, "title": title, "secs": secs, "views": views, "channel": channel }));
         }
-        if out.len() >= 8 {
+        if out.len() >= 10 {
             break;
         }
     }
@@ -483,6 +489,31 @@ const PLAYER_INIT: &str = r#"(function () {
     if (location.hostname === 'music.apple.com') return amFetch();
     send({ ok: false, why: 'non-pris-en-charge' });
   };
+  // Lecture sur le compte Spotify : l'app Spotify ouverte sur le PC joue le titre (Premium nécessaire).
+  window.__vesperSvc = async function (a) {
+    var out = { ok: false, why: '' };
+    try {
+      if (location.hostname !== 'open.spotify.com') throw 'non-pris-en-charge';
+      var devs = (await spGet('/v1/me/player/devices')).devices || [];
+      var dev = devs.find(function (d) { return d.is_active; }) || devs.find(function (d) { return d.type === 'Computer'; }) || devs[0];
+      if (!dev) throw 'aucun-appareil';
+      var call = async function (m, path, body) {
+        var r = await fetch('https://api.spotify.com/v1/me/player/' + path + (path.indexOf('?') < 0 ? '?' : '&') + 'device_id=' + encodeURIComponent(dev.id),
+          { method: m, headers: { Authorization: window.__spToken, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+        if (r.status === 403) throw 'premium';
+        if (!r.ok && r.status !== 204) throw 'erreur ' + r.status;
+      };
+      if (a.op === 'play') {
+        var t = (((await spGet('/v1/search?type=track&limit=1&q=' + encodeURIComponent(a.q))).tracks || {}).items || [])[0];
+        if (!t) throw 'introuvable';
+        await call('PUT', 'play', { uris: [t.uri] });
+      } else if (a.op === 'pause') await call('PUT', 'pause');
+      else if (a.op === 'resume') await call('PUT', 'play');
+      else if (a.op === 'seek') await call('PUT', 'seek?position_ms=' + (parseInt(a.q, 10) || 0));
+      out.ok = true;
+    } catch (e) { out.why = String(e); }
+    send(out);
+  };
   window.__vesperFetchList = function (id, kind) {
     if (location.hostname === 'open.spotify.com') return spList(id);
     if (location.hostname === 'music.youtube.com') return ytList(id);
@@ -637,6 +668,28 @@ async fn update_install(app: AppHandle) -> Result<(), String> {
     let update = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())?.ok_or("aucune mise à jour")?;
     update.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
     app.restart();
+}
+
+/// Commande de lecture envoyée au service connecté (lecture sur le compte de la personne).
+#[tauri::command]
+async fn svc_cmd(app: AppHandle, op: String, q: Option<String>) -> Result<String, String> {
+    if !["play", "pause", "resume", "seek"].contains(&op.as_str()) {
+        return Err("commande inconnue".into());
+    }
+    let w = app.get_webview_window("player").ok_or("lecteur absent")?;
+    let arg = json!({ "op": op, "q": q.unwrap_or_default() }).to_string();
+    let _ = w.eval(&format!("window.__vesperSvc && window.__vesperSvc({arg})"));
+    for _ in 0..120 {
+        thread::sleep(Duration::from_millis(100));
+        if let Ok(u) = w.url() {
+            if let Some(d) = u.fragment().and_then(|f| f.strip_prefix("vesper=")) {
+                let out = dec(d);
+                let _ = w.eval("history.replaceState(null, '', location.pathname + location.search)");
+                return Ok(out);
+            }
+        }
+    }
+    Err("pas de réponse".into())
 }
 
 #[tauri::command]
@@ -1278,7 +1331,7 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_scene(app)))
-        .invoke_handler(tauri::generate_handler![init, set_settings, set_source, spotify_status, spotify_connect, spotify_disconnect, spotify_api, video_search, open_service, player_open, player_play, player_data, update_check, update_install, player_show, player_nav, player_search, close_service, media_cmd, http_get, open_url, wallpaper, win])
+        .invoke_handler(tauri::generate_handler![init, set_settings, set_source, spotify_status, spotify_connect, spotify_disconnect, spotify_api, video_search, open_service, player_open, player_play, player_data, update_check, update_install, svc_cmd, player_show, player_nav, player_search, close_service, media_cmd, http_get, open_url, wallpaper, win])
         .on_window_event(|w, e| {
             if let WindowEvent::CloseRequested { api, .. } = e {
                 if w.label() == "scene" {
