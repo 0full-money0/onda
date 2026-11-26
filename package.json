@@ -1,7 +1,7 @@
 {
   "name": "onda",
   "private": true,
-  "version": "1.0.15",
+  "version": "1.0.16",
   "description": "La musique en grand",
   "scripts": {
     "tauri": "tauri"

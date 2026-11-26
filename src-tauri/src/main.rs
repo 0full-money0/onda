@@ -764,8 +764,35 @@ async fn update_check(app: AppHandle) -> Result<Option<Value>, String> {
 async fn update_install(app: AppHandle) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
     let update = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())?.ok_or("aucune mise à jour")?;
-    update.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
-    app.restart();
+    // Windows : l'installation échouait sans rien dire quand Onda tournait encore.
+    // On télécharge (signature vérifiée), Onda se ferme complètement, puis l'installation se lance et rouvre Onda.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let bytes = update.download(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
+        let dir = std::env::temp_dir().join(format!("Onda-{}-maj", update.version));
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let inst = dir.join("Onda-setup.exe");
+        fs::write(&inst, &bytes).map_err(|e| e.to_string())?;
+        let me = std::env::current_exe().map_err(|e| e.to_string())?;
+        let script = format!(
+            "timeout /t 2 /nobreak >nul & taskkill /im Onda.exe /f >nul 2>&1 & start \"\" /wait \"{}\" /P & start \"\" \"{}\"",
+            inst.display(),
+            me.display()
+        );
+        std::process::Command::new("cmd")
+            .args(["/C", &script])
+            .creation_flags(0x0800_0000 | 0x0000_0008)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        app.exit(0);
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    {
+        update.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
+        app.restart();
+    }
 }
 
 /// Commande de lecture envoyée au service connecté (lecture sur le compte de la personne).

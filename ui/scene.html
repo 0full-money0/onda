@@ -960,7 +960,7 @@ async function loadAccount() {
     if (i) await new Promise(r => setTimeout(r, 1500));
     if (run !== acctRun || svcId !== S.service) return;
     let d = null; try { d = JSON.parse(await acctCall()); } catch {}
-    if (d && d.ok) {
+    if (d && d.ok && Array.isArray(d.songs)) {   // (une réponse sans titres venait d'une autre demande : on l'ignore)
       const old = acctGet(); if (old && old.songs && old.songs.length > d.songs.length) d.songs = old.songs;   // garde la bibliothèque complète déjà connue
       localStorage.setItem('acct:' + svcId, JSON.stringify(d));
       acctState = 'ok'; cardKey = ''; buildCards(); sideKey = ''; buildSide(); if (view === 'library') renderLib();
