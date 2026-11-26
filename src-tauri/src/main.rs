@@ -1290,6 +1290,8 @@ mod winmedia {
             }
         };
         let mut last_key = String::from("\u{0}");
+        let mut last_sig = String::new();
+        let mut last_emit = Instant::now();
         let mut track_start = Instant::now();
         let mut thumb_tries = 0u32;
         let mut last_thumb_len = usize::MAX;
@@ -1364,7 +1366,12 @@ mod winmedia {
                 "playing": sn.playing, "pos": pos, "dur": sn.dur, "at": now_ms(),
             });
             *sh.state.lock().unwrap() = st.clone();
-            let _ = app.emit("state", &st);
+            let sig = format!("{}|{}|{}|{}|{}", sn.title, sn.artist, sn.app, sn.playing, sn.dur);
+            if sig != last_sig || last_emit.elapsed() >= Duration::from_secs(2) {
+                last_sig = sig;
+                last_emit = Instant::now();
+                let _ = app.emit("state", &st);
+            }
     
             if thumb_tries > 0 {
                 thumb_tries -= 1;

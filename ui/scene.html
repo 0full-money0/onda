@@ -290,7 +290,8 @@
   #upd { position:fixed; right:2.4vw; top:2.4vh; z-index:700; display:none; align-items:center; gap:1.2vh; padding:1vh 1vh 1vh 2vh; border-radius:99px; font-size:1.45vh; font-weight:600; }
   #upd .cta, #upd .ghost { padding:.9vh 1.8vh; font-size:1.35vh; }
   #toast { position:fixed; left:50%; top:3.5vh; transform:translateX(-50%); padding:11px 20px; border-radius:99px; font-size:13.5px; font-weight:600;
-    display:none; z-index:600; max-width:60vw; text-align:center; }
+    z-index:600; max-width:60vw; text-align:center; opacity:0; translate:0 -1.5vh; pointer-events:none; transition:opacity .35s var(--ease), translate .45s var(--ease); }
+  #toast.show { opacity:1; translate:0 0; }
 
   /* ---------- lumière des bords (dans l'app) ---------- */
   #fx { position:fixed; inset:0; z-index:800; opacity:0; transition:opacity 1s ease; pointer-events:none; --g:96px; }
@@ -578,10 +579,11 @@ const svc = () => SERVICES.find(s => s.id === S.service) || null;
 const isWeb = () => !!S.service && S.service !== 'system';
 
 let S = {}, st = { playing:false, pos:0, dur:0, at:Date.now(), title:'' }, art = '', AD = null, artistKey = '', view = 'ambiance';
+let stKey = '';   // dernier état affiché dans la barre du bas
 let cards = [], focus = 0, cardKey = '';
 let lyr = null, lyrKey = '', lyrIdx = -2;
 
-function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => { t.style.display = 'none'; }, 4500); }
+function toast(msg) { const t = $('toast'); if (t.textContent === msg && t.classList.contains('show')) { clearTimeout(toast.t); } else { t.textContent = msg; t.classList.add('show'); } clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 4500); }
 
 function clock() {
   const d = new Date();
@@ -731,6 +733,7 @@ const tkey = (t) => norm(t.artist) + '|' + norm(t.name);
 const store = (k, v) => { k = k + ':' + (S.service || 'aucun'); try { if (v === undefined) return JSON.parse(localStorage.getItem(k) || '[]'); localStorage.setItem(k, JSON.stringify(v)); } catch { return []; } };
 const isFav = (t) => store('favs').some(f => tkey(f) === tkey(t));
 function toggleFav(t) {
+  stKey = '';
   if (!t || !t.name) return;
   let f = store('favs'); const k = tkey(t);
   f = f.some(x => tkey(x) === k) ? f.filter(x => tkey(x) !== k) : [{ id: t.id, name: t.name, artist: t.artist, album: t.album || '', art: t.art || '', ms: t.ms || 0 }, ...f];
@@ -784,7 +787,19 @@ async function natPoll() {
 function natStart(mode) {
   nativeOn = true; natMode = mode; natPos = null;
   try { if (player && playerOk) applyAudio(player); } catch {}
-  clearInterval(natTimer); natTimer = setInterval(natPoll, 2500); natPoll();
+  clearInterval(natTimer); natTimer = setInterval(natPoll, 4000); natPoll();
+  // Filet de sécurité : la plateforme dit « je joue », mais on vérifie que du son sort vraiment du PC.
+  // Sinon on remet le son du clip : on ne reste jamais dans le silence.
+  const t = performance.now(), tok = playTok;
+  setTimeout(() => {
+    if (!nativeOn || tok !== playTok) return;
+    if (!IS_WIN && !lastAudio) return;   // Mac / Linux sans écoute du son du PC : pas de vérification (Windows l'a toujours)
+    if (heardAt > t + 1200) return;                      // du son sort bien
+    const m = natMode; nativeOn = false; natMode = ''; clearInterval(natTimer);
+    if (m === 'sc') scStop(); else svcCall({ op: m === 'web' ? 'mtoggle' : 'pause' }).catch(() => {});
+    try { if (player && playerOk) applyAudio(player); } catch {}
+    toast('Ta plateforme n’a produit aucun son dans Onda : le son passe par le clip.');
+  }, 6500);
 }
 // Attend que l'app du PC joue bien ce titre (Windows sait quelle app joue quoi).
 async function natVerify(t, re) {
@@ -971,8 +986,8 @@ async function loadAccount() {
   if (run === acctRun && !acctGet()) { acctState = 'echec'; if (view === 'library') renderLib(); }
 }
 async function fillAccount(svcId, run) {   // le reste de la bibliothèque arrive en arrière-plan
-  for (let i = 0; i < 120; i++) {
-    await new Promise(r => setTimeout(r, 2000));
+  for (let i = 0; i < 80; i++) {
+    await new Promise(r => setTimeout(r, 3000));
     if (run !== acctRun || svcId !== S.service) return;
     let d = null; try { d = JSON.parse(await acctCall({ mode: 'full' })); } catch {}
     if (d && d.done) {
@@ -1397,14 +1412,25 @@ function showVideo() {
   if (on) document.body.classList.remove('loading');
   $('vid').classList.toggle('on', on); document.body.classList.toggle('video', on);
 }
-function syncVideo() { showVideo(); }
+function syncVideo() {
+  if (nativeOn && player && playerOk) {
+    try {
+      const ps = player.getPlayerState(), platOn = natPos ? natPos.playing : st.playing;
+      if ((!S.video || !platOn) && ps === 1) player.pauseVideo();
+      else if (S.video && platOn && ps === 2) { const n = natNow(); if (n != null) player.seekTo(n / 1000, true); player.playVideo(); }
+    } catch {}
+  }
+  showVideo();
+}
 function togglePlay() {
   const ps = player && playerOk && direct() ? player.getPlayerState() : -1;
   if (nativeOn) {
+    const platOn = natPos ? natPos.playing : st.playing;
     if (natMode === 'sc') { try { scW && scW.toggle(); } catch {} }
     else if (natMode === 'web') svcCall({ op: 'mtoggle' }).catch(() => {});
-    else if (natMode === 'sys') invoke('media_cmd', { name: 'toggle' }); else svcCall({ op: ps === 1 ? 'pause' : 'resume' }).catch(() => {});
-    if (natPos) natPos = { pos: natNow() || 0, playing: ps !== 1, at: Date.now() };
+    else if (natMode === 'sys') invoke('media_cmd', { name: 'toggle' }); else svcCall({ op: platOn ? 'pause' : 'resume' }).catch(() => {});
+    natPos = { pos: natNow() || 0, playing: !platOn, at: Date.now() };
+    stKey = ''; syncVideo(); return;
   }
   if (ps === 1) { hideVideo(); player.pauseVideo(); }   // le clip s'efface avant la pause : pas de gros bouton
   else if (ps === 2) player.playVideo();
@@ -1476,8 +1502,10 @@ function lightApply() {
   if (active) { fx.classList.remove('off'); void fx.offsetWidth; fx.classList.add('on'); if (!lTimer) lTimer = setInterval(lightTick, FRAME); }
   else { fx.classList.remove('on'); lOff = setTimeout(() => { fx.classList.add('off'); clearInterval(lTimer); lTimer = 0; }, 1100); }
 }
+let heardAt = 0;
 listen('audio', (a) => {
   lastAudio = performance.now();
+  if (a.l > 0.003 || a.b > 0.008) heardAt = lastAudio;
   if (a.b === 0 && a.l === 0) { target = 0; return; }
   peak = Math.max(peak * 0.9995, a.b, 0.02);
   const nb = Math.min(1, a.b / peak);
@@ -1491,6 +1519,9 @@ lightPalette(WARM);
 
 // ================= barre =================
 function renderState() {
+  const k = [st.title, st.artist, st.album, st.playing, S.service, view].join('|');
+  if (k === stKey) { lightApply(); return; }   // rien n'a changé : seule la progression bouge (gérée par tick)
+  stKey = k;
   document.body.classList.toggle('paused', !st.playing);
   $('ntitle').textContent = st.title || 'Rien ne joue';
   $('nsub').textContent = st.title ? [st.artist, st.album].filter(Boolean).join(' — ') : 'Choisis un titre';
@@ -1498,6 +1529,7 @@ function renderState() {
   renderService(); updateEmpty(); renderFav(); lightApply(); tick();
 }
 function renderSettings() {
+  stKey = '';
   $('bVid').classList.toggle('off', !S.video);
   $('bRep').classList.toggle('off', !S.repeat);
   $('bLyr').classList.toggle('off', !S.lyrics);
@@ -1782,7 +1814,7 @@ setInterval(() => {
   const nn = natNow();
   onState({ title: q.name, artist: q.artist, album: q.album || '', app: 'onda', playing: nn != null ? (natPos ? natPos.playing : true) : ps === 1 || ps === 3, pos: Math.round(nn != null ? nn : cur * 1000), dur: nn != null && q.ms ? q.ms : Math.round(dur * 1000), at: Date.now() });
 }, 500);
-listen('art', (x) => { if (ownPlayer()) return; art = x; buildCards(); buildSide(); renderArt(); });
+listen('art', (x) => { if (ownPlayer() || x === art) return; art = x; buildCards(); buildSide(); renderArt(); });
 listen('settings', (s) => { S = s; renderSettings(); });
 invoke('wallpaper').then(async (w) => { wallImg = await loadImg(w); bakedFor = null; renderArt(); });
 
