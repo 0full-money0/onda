@@ -293,10 +293,17 @@ const PLAYER_INIT: &str = r#"(function () {
       try {
         var h = (init && init.headers) || (input && input.headers);
         var auth = h && (h.get ? h.get('authorization') : (h.authorization || h.Authorization));
-        if (auth && /^Bearer /i.test(auth)) window.__spToken = auth;
+        if (auth && /^Bearer /i.test(auth) && auth !== window.__spToken) {
+          window.__spToken = auth; window.__spCached = false;
+          try { localStorage.setItem('ondaTok', JSON.stringify({ t: auth, at: Date.now() })); } catch (e) {}
+        }
       } catch (e) {}
       return of.apply(this, arguments);
     };
+    try {
+      var c = JSON.parse(localStorage.getItem('ondaTok') || 'null');
+      if (c && c.t && Date.now() - c.at < 50 * 60 * 1000) { window.__spToken = c.t; window.__spCached = true; }
+    } catch (e) {}
   }
   function act() {
     var n = window.name || '';
@@ -344,9 +351,13 @@ const PLAYER_INIT: &str = r#"(function () {
   var spImg = function (imgs) { imgs = imgs || []; return (imgs[1] || imgs[0] || {}).url || ''; };
   var spTrack = function (t) { return t && t.name ? { id: t.id || '', ms: t.duration_ms || 0, n: t.name, a: (t.artists || []).map(function (x) { return x.name; }).join(', '), al: (t.album || {}).name || '', art: spImg((t.album || {}).images), t: 'songs' } : null; };
   var spGet = async function (path) {
-    for (var i = 0; i < 40 && !window.__spToken; i++) await sleep(500);
+    for (var i = 0; i < 200 && !window.__spToken; i++) await sleep(100);
     if (!window.__spToken) throw 'jeton';
     var r = await fetch('https://api.spotify.com' + path, { headers: { Authorization: window.__spToken } });
+    if (r.status === 401 && window.__spCached) {   // jeton gardé périmé : on attend celui du lecteur web
+      window.__spToken = null; window.__spCached = false; try { localStorage.removeItem('ondaTok'); } catch (e) {}
+      return spGet(path);
+    }
     if (r.status === 401 || r.status === 403) throw 'connexion';
     if (!r.ok) throw 'erreur ' + r.status;
     return r.json();
@@ -532,7 +543,10 @@ fn build_player(app: &AppHandle, url: tauri::WebviewUrl) -> Result<tauri::Webvie
         .skip_taskbar(true)
         .visible(false)
         .initialization_script(PLAYER_INIT)
-        .additional_browser_args(BROWSER_ARGS)
+        .additional_browser_args(BROWSER_ARGS);
+    #[cfg(target_os = "linux")]
+    let w = w.user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+    let w = w
         .parent(&scene)
         .map_err(|e| e.to_string())?
         .build()
