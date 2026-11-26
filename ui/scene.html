@@ -796,13 +796,42 @@ async function natVerify(t, re) {
   }
   return false;
 }
+// SoundCloud : son joué par le lecteur officiel de SoundCloud (caché), position suivie en direct
+let scW = null, scFrame = null;
+const scApi = () => window.SC ? Promise.resolve() : new Promise((ok, ko) => { const x = document.createElement('script'); x.src = 'https://w.soundcloud.com/player/api.js'; x.onload = ok; x.onerror = ko; document.head.appendChild(x); });
+function scStop() { try { if (scW) scW.pause(); } catch {} if (scFrame) scFrame.remove(); scFrame = scW = null; }
+async function scPlay(url, tok) {
+  await scApi(); scStop();
+  scFrame = document.createElement('iframe'); scFrame.allow = 'autoplay'; scFrame.style.cssText = 'position:fixed;width:1px;height:1px;left:-10px;top:-10px;opacity:0;pointer-events:none';
+  scFrame.src = 'https://w.soundcloud.com/player/?auto_play=true&visual=false&url=' + encodeURIComponent(url);
+  document.body.appendChild(scFrame); scW = SC.Widget(scFrame);
+  const E = SC.Widget.Events;
+  return new Promise((done) => {
+    let started = false; const giveUp = setTimeout(() => done(started), 9000);
+    scW.bind(E.READY, () => scW.play());
+    scW.bind(E.PLAY_PROGRESS, (p) => { natPos = { pos: p.currentPosition, playing: true, at: Date.now() }; if (!started) { started = true; clearTimeout(giveUp); done(true); } });
+    scW.bind(E.PAUSE, (p) => { natPos = { pos: (p && p.currentPosition) || natNow() || 0, playing: false, at: Date.now() }; });
+    scW.bind(E.FINISH, () => { if (tok === playTok && nativeOn && natMode === 'sc') { if (S.repeat) scW.seekTo(0), scW.play(); else if (queue[qi + 1]) step(1); } });
+  });
+}
 const backToOnda = () => setTimeout(() => invoke('win', { action: 'show' }), 1200);   // l'app du service passe devant : Onda reprend la main
 async function nativePlay(t) {
-  nativeOn = false; natMode = ''; natPos = null; clearInterval(natTimer);
+  nativeOn = false; natMode = ''; natPos = null; clearInterval(natTimer); scStop();
   const tok = playTok, sv = S.service;
   const fail = (msg) => { if (tok === playTok) toast(msg + ' Le son passe par le clip en attendant.'); };
-  if (sv === 'apple') {   // Mac : l'app Musique ; Windows : pas de moyen de piloter Apple Music
-    if (!IS_MAC) return fail('Apple Music ne peut pas être piloté sur ce PC.');
+  if (sv === 'apple' && IS_WIN) {   // Windows : l'app Apple Music ouvre le lien music:// du titre
+    if (!(await invoke('has_app', { scheme: 'music' }).catch(() => false))) return fail('Installe l’app Apple Music (Microsoft Store) pour que le son vienne de ton compte.');
+    const cc = ((navigator.language || 'fr-FR').split('-')[1] || 'FR').toLowerCase();
+    const r = await getJson('https://itunes.apple.com/search?' + new URLSearchParams({ term: `${t.artist} ${t.name}`, entity: 'song', limit: '1', country: cc }));
+    const hit = r && r.results && r.results[0];
+    if (tok !== playTok) return;
+    if (!(hit && hit.trackViewUrl)) return fail('Titre introuvable sur Apple Music.');
+    invoke('open_url', { url: hit.trackViewUrl.replace(/^https:/, 'music:').replace(/&uo=\d+/, '') }); backToOnda();
+    if (await natVerify(t, /apple/i)) { if (tok === playTok) natStart('sys'); return; }
+    return fail('L’app Apple Music a ouvert le titre sans le lancer.');
+  }
+  if (sv === 'apple') {   // Mac : l'app Musique
+    if (!IS_MAC) return fail('Apple Music ne peut pas être piloté sur ce système.');
     let r = null; try { r = JSON.parse(await invoke('mac_music', { op: 'play', q: t.name, artist: t.artist })); } catch {}
     if (tok !== playTok) return;
     if (r && r.ok) return natStart('mac');
@@ -813,6 +842,7 @@ async function nativePlay(t) {
     if (tok !== playTok) return;
     if (r && r.ok) return natStart('api');   // Premium : lancé à distance
     if (r && r.uri) {   // sans Premium, ou app fermée : on demande à l'app Spotify du PC d'ouvrir le titre
+      if (IS_WIN && !(await invoke('has_app', { scheme: 'spotify' }).catch(() => false))) return fail(r.why === 'premium' ? 'Spotify Premium ou l’app Spotify pour PC est nécessaire.' : 'Installe l’app Spotify pour PC pour que le son vienne de ton compte.');
       invoke('open_url', { url: r.uri }); backToOnda();
       if (!IS_WIN) { natStart('api'); return; }
       if (await natVerify(t, APPNAME.spotify)) { if (tok === playTok) natStart('sys'); return; }
@@ -820,12 +850,23 @@ async function nativePlay(t) {
     }
     return fail(r && r.why === 'introuvable' ? 'Titre introuvable sur Spotify.' : 'Spotify ne répond pas.');
   }
+  if (sv === 'soundcloud') {
+    let r = null; try { r = JSON.parse(await svcCall({ op: 'play', q: `${t.artist} ${t.name}` })); } catch {}
+    if (tok !== playTok) return;
+    if (!(r && r.ok && r.url)) return fail(r && r.why === 'introuvable' ? 'Titre introuvable sur SoundCloud.' : 'SoundCloud ne répond pas.');
+    if (r.ms && !t.ms) t.ms = r.ms;
+    const ok = await scPlay(r.url, tok);
+    if (tok !== playTok) return scStop();
+    if (ok) { natStart('sc'); clearInterval(natTimer); return; }
+    scStop(); return fail('Le lecteur SoundCloud n’a pas démarré.');
+  }
   if (sv === 'deezer') {   // l'app Deezer du PC lance le titre
     let id = t.dz || '';
     if (!id) { const r = await getJson(DZ + '/search?' + new URLSearchParams({ q: `artist:"${t.artist}" track:"${t.name}"`, limit: '1' })); id = r && r.data && r.data[0] && r.data[0].id; }
     if (tok !== playTok) return;
     if (!id) return fail('Titre introuvable sur Deezer.');
     if (!IS_WIN) return;   // sans moyen de vérifier, on garde le son du clip
+    if (!(await invoke('has_app', { scheme: 'deezer' }).catch(() => false))) return fail('Installe l’app Deezer pour PC pour que le son vienne de ton compte.');
     invoke('open_url', { url: 'deezer://www.deezer.com/track/' + id }); backToOnda();
     if (await natVerify(t, APPNAME.deezer)) { if (tok === playTok) natStart('sys'); return; }
     return fail('L’app Deezer n’a pas démarré ce titre (elle doit être installée sur ce PC).');
@@ -1375,7 +1416,8 @@ function syncVideo() { showVideo(); }
 function togglePlay() {
   const ps = player && playerOk && direct() ? player.getPlayerState() : -1;
   if (nativeOn) {
-    if (natMode === 'sys') invoke('media_cmd', { name: 'toggle' }); else svcCall({ op: ps === 1 ? 'pause' : 'resume' }).catch(() => {});
+    if (natMode === 'sc') { try { scW && scW.toggle(); } catch {} }
+    else if (natMode === 'sys') invoke('media_cmd', { name: 'toggle' }); else svcCall({ op: ps === 1 ? 'pause' : 'resume' }).catch(() => {});
     if (natPos) natPos = { pos: natNow() || 0, playing: ps !== 1, at: Date.now() };
   }
   if (ps === 1) { hideVideo(); player.pauseVideo(); }   // le clip s'efface avant la pause : pas de gros bouton
@@ -1715,7 +1757,9 @@ document.querySelector('.now .line').addEventListener('click', (e) => {
   if (!ownPlayer()) return;
   const d = player.getDuration(); if (!(d > 0)) return;
   player.seekTo(f * d, true); lyrIdx = -2; $('fill').style.transform = `scaleX(${f})`;
-  if (nativeOn) svcCall({ op: 'seek', q: String(Math.round(f * (((queue[qi] && queue[qi].ms) || d * 1000)))) }).catch(() => {});
+  const sk = Math.round(f * (((queue[qi] && queue[qi].ms) || d * 1000)));
+  if (nativeOn && natMode === 'sc') { try { scW && scW.seekTo(sk); } catch {} natPos = { pos: sk, playing: true, at: Date.now() }; }
+  else if (nativeOn) svcCall({ op: 'seek', q: String(sk) }).catch(() => {});
 });
 
 // ================= touches multimédia du clavier =================

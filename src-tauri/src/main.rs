@@ -212,6 +212,7 @@ fn open_url(url: String) {
     let ok = APPS.contains(&url.as_str())
         || url.starts_with("spotify:search:")
         || url.strip_prefix("spotify:track:").is_some_and(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()))
+        || (url.starts_with("music://music.apple.com/") && !url.contains(' '))
         || url.strip_prefix("deezer://www.deezer.com/track/").is_some_and(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
         || url.starts_with("https://music.youtube.com/search?q=")
         || url.starts_with("https://music.apple.com/");
@@ -288,6 +289,12 @@ fn place_player(app: &AppHandle, w: &tauri::WebviewWindow) {
 /// Script chargé dans la page du service : il exécute la demande de lecture laissée par l'app (recherche + lancement), sans rien afficher.
 const PLAYER_INIT: &str = r#"(function () {
   if (window.top !== window) return;
+  // SoundCloud : garde l'identifiant que le site utilise pour ses propres requêtes
+  if (location.hostname === 'soundcloud.com') {
+    var grab = function (u) { try { var x = /[?&]client_id=([A-Za-z0-9]+)/.exec(String(u)); if (x) window.__scId = x[1]; } catch (e) {} };
+    var of2 = window.fetch; window.fetch = function (input) { grab(input && input.url ? input.url : input); return of2.apply(this, arguments); };
+    var oo = XMLHttpRequest.prototype.open; XMLHttpRequest.prototype.open = function (mth, u) { grab(u); return oo.apply(this, arguments); };
+  }
   // Spotify : garde le jeton que le lecteur web utilise déjà pour lire le compte de la personne connectée.
   if (location.hostname === 'open.spotify.com') {
     var of = window.fetch;
@@ -506,6 +513,16 @@ const PLAYER_INIT: &str = r#"(function () {
   window.__vesperSvc = async function (a) {
     var out = { ok: false, why: '' };
     try {
+      if (location.hostname === 'soundcloud.com' && a.op === 'play') {   // trouve le titre : Onda le joue avec le lecteur officiel de SoundCloud
+        for (var w = 0; w < 100 && !window.__scId; w++) await sleep(100);
+        if (!window.__scId) throw 'jeton';
+        var rq = await fetch('https://api-v2.soundcloud.com/search/tracks?limit=5&q=' + encodeURIComponent(a.q) + '&client_id=' + window.__scId);
+        if (!rq.ok) throw 'erreur ' + rq.status;
+        var hit = ((await rq.json()).collection || []).find(function (t) { return t.permalink_url && t.policy !== 'BLOCK' && t.policy !== 'SNIP'; });
+        if (!hit) throw 'introuvable';
+        out.url = hit.permalink_url; out.ms = hit.full_duration || hit.duration || 0; out.ok = true;
+        return send(out);
+      }
       if (location.hostname !== 'open.spotify.com') throw 'non-pris-en-charge';
       if (a.op === 'state') {
         var rs = await fetch('https://api.spotify.com/v1/me/player', { headers: { Authorization: window.__spToken } });
@@ -719,6 +736,41 @@ async fn svc_cmd(app: AppHandle, op: String, q: Option<String>) -> Result<String
 
 #[cfg(not(windows))]
 const UI_PORT: u16 = 47231;
+
+/// L'app d'un service est-elle installée (son type de lien est connu de Windows) ? Évite la fenêtre « Choisir une application ».
+#[tauri::command]
+fn has_app(scheme: String) -> bool {
+    if scheme.is_empty() || !scheme.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let reg = std::process::Command::new("reg")
+            .args(["query", &format!("HKCR\\{scheme}"), "/ve"])
+            .creation_flags(0x0800_0000)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if reg {
+            return true;
+        }
+        // apps du Microsoft Store : leurs liens ne sont pas toujours déclarés au même endroit
+        let pkg = match scheme.as_str() {
+            "music" => "AppleInc.AppleMusicWin",
+            "spotify" => "SpotifyAB.SpotifyMusic",
+            "deezer" => "Deezer.",
+            _ => return false,
+        };
+        let dir = std::env::var("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Packages")).ok();
+        return dir
+            .and_then(|d| fs::read_dir(d).ok())
+            .map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().starts_with(pkg)))
+            .unwrap_or(false);
+    }
+    #[allow(unreachable_code)]
+    true
+}
 
 // Mac : le son d'Apple Music passe par l'app Musique (titres de ta bibliothèque)
 #[tauri::command]
@@ -1394,7 +1446,7 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_scene(app)))
-        .invoke_handler(tauri::generate_handler![init, set_settings, set_source, spotify_status, spotify_connect, spotify_disconnect, spotify_api, video_search, open_service, player_open, player_play, player_data, update_check, update_install, svc_cmd, mac_music, player_show, player_nav, player_search, close_service, media_cmd, http_get, open_url, wallpaper, win])
+        .invoke_handler(tauri::generate_handler![init, set_settings, set_source, spotify_status, spotify_connect, spotify_disconnect, spotify_api, video_search, open_service, player_open, player_play, player_data, update_check, update_install, svc_cmd, mac_music, has_app, player_show, player_nav, player_search, close_service, media_cmd, http_get, open_url, wallpaper, win])
         .on_window_event(|w, e| {
             if let WindowEvent::CloseRequested { api, .. } = e {
                 if w.label() == "scene" {
