@@ -358,7 +358,6 @@
   #act button { text-align:left; padding:1.05vh 1.3vh; border-radius:1.1vh; font-size:1.5vh; font-weight:600; }
   #act button:hover { background:rgba(255,255,255,.14); }
   .shd { margin:2.2vh 0 .8vh .9vh; font-size:1.2vh; letter-spacing:.16em; text-transform:uppercase; color:rgba(255,255,255,.5); }
-  .side .tr { content-visibility:auto; contain-intrinsic-size:auto 5.6vh; }
   /* ---------- paroles façon karaoké : chaque mot s'allume quand il est chanté ---------- */
   #lcur .w { display:inline-block; margin-right:.28em; color:transparent; -webkit-background-clip:text; background-clip:text;
     background-image:linear-gradient(90deg, #fff 0 50%, rgba(255,255,255,.3) 50% 100%); background-size:205% 100%; background-position:100% 0;
@@ -798,7 +797,7 @@ function natStart(mode) {
     const m = natMode; nativeOn = false; natMode = ''; clearInterval(natTimer);
     if (m === 'sc') scStop(); else svcCall({ op: m === 'web' ? 'mtoggle' : 'pause' }).catch(() => {});
     try { if (player && playerOk) applyAudio(player); } catch {}
-    toast('Ta plateforme n’a produit aucun son dans Onda : le son passe par le clip.');
+    toast(`${(svc() && svc().name) || 'Ta plateforme'} n’a produit aucun son dans Onda : le son passe par le clip.`);
   }, 6500);
 }
 // Attend que l'app du PC joue bien ce titre (Windows sait quelle app joue quoi).
@@ -835,11 +834,12 @@ async function nativePlay(t) {
   const fail = (msg) => { if (tok === playTok) toast(msg + ' Le son passe par le clip en attendant.'); };
   const IS_LINUX = !IS_WIN && !IS_MAC;
   if ((sv === 'spotify' || sv === 'apple') && IS_LINUX) return fail(`${sv === 'spotify' ? 'Spotify' : 'Apple Music'} ne peut pas jouer dans Onda sous Linux (le moteur web de Linux n’a pas leur protection anti-copie).`);
+  if ((sv === 'apple' || sv === 'spotify') && IS_WIN) await invoke('player_park').catch(() => {});   // une page complètement cachée est mise en veille par Windows, son compris
   if (sv === 'apple') {   // le lecteur Apple Music caché dans Onda joue le titre (Windows : Widevine, Mac : FairPlay)
     let r = null; try { r = JSON.parse(await svcCall({ op: 'play', q: `${t.artist} ${t.name}` })); } catch {}
     if (tok !== playTok) return;
     if (r && r.ok) return natStart('api');
-    return fail(r && r.why === 'introuvable' ? 'Titre introuvable sur Apple Music.' : r && r.why === 'jeton' ? 'Connecte-toi à Apple Music dans Onda.' : 'Apple Music refuse de jouer dans Onda sur ce système.');
+    return fail(r && r.why === 'introuvable' ? 'Titre introuvable sur Apple Music.' : r && r.why === 'jeton' ? 'Connecte-toi à Apple Music dans Onda.' : `Apple Music refuse de jouer dans Onda (${(r && r.why) || 'sans réponse'}).`);
   }
   if (sv === 'spotify') {   // le lecteur Spotify caché dans Onda joue le titre (Premium ou gratuit)
     let r = null; try { r = JSON.parse(await svcCall({ op: 'play', q: `${t.artist} ${t.name}` })); } catch {}
@@ -1197,7 +1197,7 @@ function buildSide() {
   }
   const ac = acctGet(), mine = ac ? (ac.songs || []).map(acT) : [];
   const nHead = items.length;
-  mine.slice(0, 400).forEach((t, k) => items.push({ t, src: 'lib', list: mine, k }));
+  mine.slice(0, 150).forEach((t, k) => items.push({ t, src: 'lib', list: mine, k }));
   const key = (fromQueue ? 'q' + qi + ':' + queue.length : 'p') + items.length + '#' + norm(st.title) + '#' + (art ? 1 : 0);
   if (key === sideKey) return; sideKey = key; sideItems = items;
   if (!items.length) { $('side').innerHTML = ''; return; }
@@ -1602,8 +1602,8 @@ const KFONTS = ['"Bahnschrift", "Segoe UI", sans-serif', '"Segoe UI Black", "Seg
 const KANIMS = ['kpop', 'kslide', 'krot', 'kblur', 'kdrop'];
 function kinStyle() {   // chaque musique a son propre style, tiré de son titre
   const seed = hashStr(st.title + '|' + st.artist), k = $('kin'), font = KFONTS[seed % KFONTS.length];
-  k.className = ['', 'left', 'diag'][(seed >> 5) % 3];
-  k.style.fontFamily = font; k.style.textTransform = (seed >> 3) % 2 ? 'uppercase' : 'none'; k.style.fontStyle = font.startsWith('Georgia') ? 'italic' : 'normal';
+  k.className = ['', 'left', 'diag'][(seed >>> 5) % 3];
+  k.style.fontFamily = font; k.style.textTransform = (seed >>> 3) % 2 ? 'uppercase' : 'none'; k.style.fontStyle = font.startsWith('Georgia') ? 'italic' : 'normal';
   return seed;
 }
 function kinIdle() {   // avant le premier couplet ou sans paroles : le titre et l'artiste
@@ -1612,7 +1612,7 @@ function kinIdle() {   // avant le premier couplet ou sans paroles : le titre et
 }
 function renderKin(i, words, ds) {
   const seed = kinStyle(), r = rng(seed + i * 7919), base = words.length > 8 ? 6.5 : words.length > 4 ? 9 : 12.5;
-  const anims = [KANIMS[seed % 5], KANIMS[(seed >> 7) % 5]];
+  const anims = [KANIMS[seed % 5] || 'kpop', KANIMS[(seed >>> 7) % 5] || 'kslide'];
   $('kin').innerHTML = words.map((w, n) => {
     const big = w.length > 5 && r() > 0.5, fs = base * (big ? 1.3 : 0.8 + r() * 0.35);
     return `<span class="k${r() > 0.78 ? ' acc' : ''}" style="--fs:${fs.toFixed(1)}vh;--an:${anims[r() > 0.5 ? 1 : 0]};--d:${Math.max(0, Math.round(ds[n]))}ms">${esc(w)}</span>`;

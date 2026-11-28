@@ -278,6 +278,7 @@ fn place_player(app: &AppHandle, w: &tauri::WebviewWindow) {
         if let Ok(Some(m)) = scene.primary_monitor() {
             let (p, s) = (m.position(), m.size());
             // petite fenêtre centrée : elle ne sert qu'à se connecter
+            let _ = w.set_shadow(true);
             let ww = ((s.width as f64 * 0.30) as u32).max(560).min(s.width);
             let hh = (s.height as f64 * 0.70) as u32;
             let _ = w.set_position(PhysicalPosition::new(p.x + ((s.width - ww) / 2) as i32, p.y + (s.height as f64 * 0.145) as i32));
@@ -884,6 +885,26 @@ fn mac_music(op: String, q: Option<String>, artist: Option<String>) -> Result<St
         return Ok(json!({ "ok": true, "pos": (pos * 1000.0) as i64, "playing": playing }).to_string());
     }
     Ok(if txt == "ok" { json!({ "ok": true }) } else { json!({ "ok": false, "why": if txt.is_empty() { "refus" } else { txt.as_str() } }) }.to_string())
+}
+
+/// Pendant la lecture, la fenêtre du lecteur reste « affichée » mais réduite à 2 pixels dans un coin :
+/// une page complètement cachée est mise en veille par Windows (et sa musique avec).
+#[tauri::command]
+fn player_park(app: AppHandle) {
+    let Some(w) = app.get_webview_window("player") else { return };
+    if w.is_visible().unwrap_or(false) {
+        return;   // déjà affichée (connexion en cours, ou déjà rangée)
+    }
+    if let Some(scene) = app.get_webview_window("scene") {
+        if let Ok(Some(mo)) = scene.primary_monitor() {
+            let (p, s) = (mo.position(), mo.size());
+            let _ = w.set_shadow(false);
+            let _ = w.set_size(PhysicalSize::new(2, 2));
+            let _ = w.set_position(PhysicalPosition::new(p.x + s.width as i32 - 2, p.y + s.height as i32 - 2));
+            let _ = w.show();
+            let _ = scene.set_focus();
+        }
+    }
 }
 
 #[tauri::command]
@@ -1536,7 +1557,7 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_scene(app)))
-        .invoke_handler(tauri::generate_handler![init, set_settings, set_source, spotify_status, spotify_connect, spotify_disconnect, spotify_api, video_search, open_service, player_open, player_play, player_data, update_check, update_install, svc_cmd, mac_music, has_app, player_show, player_nav, player_search, close_service, media_cmd, http_get, open_url, wallpaper, win])
+        .invoke_handler(tauri::generate_handler![init, set_settings, set_source, spotify_status, spotify_connect, spotify_disconnect, spotify_api, video_search, open_service, player_open, player_play, player_data, update_check, update_install, svc_cmd, mac_music, has_app, player_park, player_show, player_nav, player_search, close_service, media_cmd, http_get, open_url, wallpaper, win])
         .on_window_event(|w, e| {
             if let WindowEvent::CloseRequested { api, .. } = e {
                 if w.label() == "scene" {
