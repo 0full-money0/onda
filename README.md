@@ -153,7 +153,7 @@ Le bouton **⋯** de la barre du bas ouvre les options : répétition, clip, ét
 <details>
 <summary><b>Onda reste bloqué sur l'intro, ou ne se met pas à jour</b></summary>
 
-Jusqu'à la version 1.0.15, la mise à jour automatique sous Windows pouvait échouer sans rien dire. C'est corrigé depuis la 1.0.16, mais une version plus ancienne ne peut pas se réparer seule : **télécharge une fois l'installateur** sur la [page des téléchargements](../../releases/latest) et lance-le. Ta bibliothèque et tes réglages sont conservés.
+Jusqu'à la version 1.0.18, la mise à jour automatique sous Windows pouvait échouer (sans rien dire, ou avec le message « Impossible de trouver '\\' »). C'est corrigé depuis la 1.0.19, mais une version plus ancienne ne peut pas se réparer seule : **télécharge une fois l'installateur** sur la [page des téléchargements](../../releases/latest) et lance-le. Ta bibliothèque et tes réglages sont conservés.
 </details>
 
 <details>

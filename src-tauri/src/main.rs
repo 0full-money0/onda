@@ -776,13 +776,17 @@ async fn update_install(app: AppHandle) -> Result<(), String> {
         let inst = dir.join("Onda-setup.exe");
         fs::write(&inst, &bytes).map_err(|e| e.to_string())?;
         let me = std::env::current_exe().map_err(|e| e.to_string())?;
+        // Chemins complets des commandes Windows (un autre « timeout », celui de Git par exemple, ne comprend pas /t).
+        // raw_arg : la ligne est donnée telle quelle à cmd ; avec .args, Rust écrivait \" et cmd cherchait à ouvrir « \\ ».
+        let sys = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+        // Toute la ligne est entourée d'une paire de guillemets en plus : cmd /C la retire (sinon il ôterait le premier et le dernier).
         let script = format!(
-            "timeout /t 2 /nobreak >nul & taskkill /im Onda.exe /f >nul 2>&1 & start \"\" /wait \"{}\" /P & start \"\" \"{}\"",
+            "/C \"\"{sys}\\System32\\PING.EXE\" -n 3 127.0.0.1 >nul & \"{sys}\\System32\\taskkill.exe\" /im Onda.exe /f >nul 2>&1 & start \"\" /wait \"{}\" /P & start \"\" \"{}\"\"",
             inst.display(),
             me.display()
         );
-        std::process::Command::new("cmd")
-            .args(["/C", &script])
+        std::process::Command::new(format!("{sys}\\System32\\cmd.exe"))
+            .raw_arg(&script)
             .creation_flags(0x0800_0000 | 0x0000_0008)
             .spawn()
             .map_err(|e| e.to_string())?;
