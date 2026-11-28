@@ -690,7 +690,9 @@ function loadImg(src) {
 }
 const toUrl = (c, q) => new Promise((res, rej) => { try { c.toBlob(b => b ? res(URL.createObjectURL(b)) : rej(), 'image/jpeg', q); } catch (e) { rej(e); } });
 async function bake(noArt) {
-  const seq = ++bakeSeq, W = LITE ? 960 : 1280, H = Math.round(W * innerHeight / innerWidth);
+  // fenêtre encore cachée (taille nulle) : on prend le format de l'écran, sinon le fond ne se calculait pas
+  const ratio = innerWidth > 0 && innerHeight > 0 ? innerHeight / innerWidth : (screen.height / screen.width) || 9 / 16;
+  const seq = ++bakeSeq, W = LITE ? 960 : 1280, H = Math.round(W * ratio);
   if (!noArt && st.playing) await new Promise(r => setTimeout(r, 2500));   // laisse d'abord démarrer le clip
   if (seq !== bakeSeq) return;
   const artImg = noArt ? null : await loadImg(wallSrc());
@@ -763,6 +765,7 @@ async function loadArtist(raw) {
 let queue = [], qi = -1, navAt = 0;
 const direct = () => isWeb();
 let nativeOn = false;   // le son vient de l'app de la plateforme, le clip YouTube est muet
+let userPaused = false;   // pause demandée par la personne (et non un simple à-coup de la plateforme)
 let natMode = '', natPos = null, natTimer = 0, sysSt = null;
 const IS_WIN = /Win/.test(navigator.platform || navigator.userAgent);
 const IS_MAC = /Mac/.test(navigator.platform || navigator.userAgent);
@@ -784,7 +787,8 @@ async function natPoll() {
   } catch {}
 }
 function natStart(mode) {
-  nativeOn = true; natMode = mode; natPos = null;
+  nativeOn = true; natMode = mode; natPos = { pos: 0, playing: true, at: Date.now() }; userPaused = false;
+  document.body.classList.remove('loading'); stKey = '';
   try { if (player && playerOk) applyAudio(player); } catch {}
   clearInterval(natTimer); natTimer = setInterval(natPoll, 4000); natPoll();
   // Filet de sécurité : la plateforme dit « je joue », mais on vérifie que du son sort vraiment du PC.
@@ -829,7 +833,7 @@ async function scPlay(url, tok) {
 }
 const backToOnda = () => setTimeout(() => invoke('win', { action: 'show' }), 1200);   // l'app du service passe devant : Onda reprend la main
 async function nativePlay(t) {
-  nativeOn = false; natMode = ''; natPos = null; clearInterval(natTimer); scStop();
+  nativeOn = false; natMode = ''; natPos = null; clearInterval(natTimer); scStop(); userPaused = false;
   const tok = playTok, sv = S.service;
   const fail = (msg) => { if (tok === playTok) toast(msg + ' Le son passe par le clip en attendant.'); };
   const IS_LINUX = !IS_WIN && !IS_MAC;
@@ -1408,16 +1412,24 @@ function playNextId() {
 // le clip n'est visible que sur l'écran Ambiance, quand il joue et que l'option est activée ; le son, lui, continue partout
 function showVideo() {
   let on = !!(S.video && view === 'ambiance' && player && playerOk && player.getPlayerState() === 1);
-  try { const d = player.getDuration(), c = player.getCurrentTime(); if (on && d > 0 && d - c < 15) { on = false; document.body.classList.add('loading'); } } catch {}   // fin du clip : le grand ONDA remplace les suggestions de YouTube
-  if (on) document.body.classList.remove('loading');
+  try {
+    const d = player.getDuration(), c = player.getCurrentTime();
+    if (on && d > 0 && d - c < 15) {
+      if (nativeOn) player.seekTo(0, true);   // son de la plateforme : le clip muet repart au début avant ses suggestions de fin
+      else { on = false; document.body.classList.add('loading'); }   // fin du clip : le grand ONDA remplace les suggestions de YouTube
+    }
+  } catch {}
+  // le grand ONDA s'efface dès que la musique joue, même sans vidéo (clip désactivé, ou son de la plateforme)
+  if (on || (st.playing && !userPaused && (nativeOn || !S.video))) document.body.classList.remove('loading');
   $('vid').classList.toggle('on', on); document.body.classList.toggle('video', on);
 }
 function syncVideo() {
   if (nativeOn && player && playerOk) {
     try {
-      const ps = player.getPlayerState(), platOn = natPos ? natPos.playing : st.playing;
-      if ((!S.video || !platOn) && ps === 1) player.pauseVideo();
-      else if (S.video && platOn && ps === 2) { const n = natNow(); if (n != null) player.seekTo(n / 1000, true); player.playVideo(); }
+      // le clip muet suit seulement les choix de la personne (pause, clip désactivé), pas les à-coups de la plateforme
+      const ps = player.getPlayerState();
+      if ((!S.video || userPaused) && ps === 1) player.pauseVideo();
+      else if (S.video && !userPaused && (ps === 2 || ps === 5 || ps === -1)) player.playVideo();
     } catch {}
   }
   showVideo();
@@ -1430,7 +1442,7 @@ function togglePlay() {
     else if (natMode === 'web') svcCall({ op: 'mtoggle' }).catch(() => {});
     else if (natMode === 'sys') invoke('media_cmd', { name: 'toggle' }); else svcCall({ op: platOn ? 'pause' : 'resume' }).catch(() => {});
     natPos = { pos: natNow() || 0, playing: !platOn, at: Date.now() };
-    stKey = ''; syncVideo(); return;
+    userPaused = platOn; stKey = ''; syncVideo(); return;
   }
   if (ps === 1) { hideVideo(); player.pauseVideo(); }   // le clip s'efface avant la pause : pas de gros bouton
   else if (ps === 2) player.playVideo();
